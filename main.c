@@ -1,18 +1,10 @@
 ////////////////////////////////////////////////////////////////////////
 ////				 MainBalanza.C									////
-////																////
-////		funcionamiento automático contínuo						////
-////																////
-////																////
 ////////////////////////////////////////////////////////////////////////
-////	  (C) Copyright 1996,2003 Custom Computer Services			////
-//// This source code may only be used by licensed users of the CCS	////
-//// C compiler.  This source code may only be distributed to other	////
-//// licensed users of the CCS C compiler.  No other use,			////
-//// reproduction or distribution is permitted without written		////
-//// permission.  Derivative programs created using this software	////
-//// in object code form are not restricted in any way.				////
-////////////////////////////////////////////////////////////////////////
+
+/*
+
+*/
 
 #include <main.h>
 #include <math.h>
@@ -513,7 +505,8 @@ void Update_Host(void)
 {
 	if(g_bUpdHost)
 	{			
-		if(!g_bKeying)   // user is typing		
+		if(!g_bKeying)   // user is typing	
+			cout<<g_lRawCount<<endl;	
 //	printf("\x1b[H%10ld, %10ld, %7.3f, %s, %s, %s\x1B[K", g_lRawCount, g_lPeso, g_fPeso, g_sInputs, g_sOutputs, g_sStatus);
 //	printf("%ld,%ld,%f\r\n", g_lRawCount, g_lPeso, g_fPeso);
 			g_bUpdHost = false;

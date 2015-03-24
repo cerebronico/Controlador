@@ -11,7 +11,7 @@
 *.cof
 *.err
 *.esym
-
+*.pui
 
 # Precompiled Headers
 *.gch
@@ -92,3 +92,4 @@ $RECYCLE.BIN/
 __history
 Debug
 Respaldos
+*.CCSpjt
