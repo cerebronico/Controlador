@@ -1,9 +1,10 @@
 ////////////////////////////////////////////////////////////////////////
-////				 MainBalanza.C									////
+////				 Main.c											////
 ////////////////////////////////////////////////////////////////////////
 
 /*
-
+Controlador para balanza de dos celdas de carga, no utiliza caja sumadora
+ya que esta se hace digitalmente leyendo dos convertidores HX711
 */
 
 #include <main.h>
@@ -27,7 +28,7 @@
 #ZERO_RAM
 
 signed long AMT1, AMT2, AMT3, AMT4, AMT5;
-static signed int32 g_lPeso, g_lRawCount, g_lWeighCount, g_lP0;
+static signed int32 g_lPeso, g_lWS_DAT_1_COUNT, g_lWS_DAT_2_COUNT, g_lP0;
 float g_fPeso, g_fP1, g_fOld_Peso, g_fNew_Peso;
 float g_fTarget = 2.0, g_fFlow, g_fOver, g_fFreeFall, g_fPesoMin=0.01;
 int8 sem, zero_cnt, span_cnt;
@@ -129,36 +130,57 @@ void User_Input ( )		// serial port interrupt
 	}
 }
 
-#INT_EXT0	
-void ReadCount_isr(void)   // lectura de convertidor, toma 56 us
+#INT_EXT1	
+void WS_DAT_2_isr(void)   // lectura de convertidor 2, toma 56 us
 { 
 	unsigned int32 Count=0;
-	unsigned char i; 
+	unsigned char i;
+	signed int32 RawCount;
 	
 	for (i=0;i<24;i++)
 	{ 
-		output_high(WS_Clk); 
+		output_high(WS_CLK_2); 
 		if(i<24) Count=Count<<1;
-		output_low(WS_Clk);
-		if(WS_DAT && (i < 24)) Count++; 
+		output_low(WS_CLK_2);
+		if(WS_DAT_2 && (i < 24)) Count++; // read input data
 	}    
 	
-	output_high(WS_Clk); 
+	output_high(WS_CLK_2); 
 
-	g_lRawCount = Count;
+	RawCount = Count;
 	if(bit_test(Count,23))
-			g_lRawCount|=0xFF800000;
+		RawCount|=0xFF800000;
 
-	g_lWeighCount = g_lRawCount;
+	g_lWS_DAT_2_COUNT = RawCount;
 		
-	output_low(WS_Clk);   // start new conversion
-	g_bGotWeightData = True;
+	output_low(WS_CLK_2);   // start new conversion
+//	g_bGotWeightData = True;
 }
 
 #INT_EXT2
-void ext2_isr(void)   // SLOW fill limit switch
-{
-	output_low(EV1); 
+void WS_DAT_1_isr(void)   // lectura de convertidor 2, toma 56 us
+{ 
+	unsigned int32 Count=0;
+	unsigned char i; 
+	signed int32 RawCount;
+		
+	for (i=0;i<24;i++)
+	{ 
+		output_high(WS_CLK_1); 
+		if(i<24) Count=Count<<1;
+		output_low(WS_CLK_1);
+		if(WS_DAT_1 && (i < 24)) Count++; 
+	}    
+	
+	output_high(WS_CLK_1); 
+
+	RawCount = Count;
+	if(bit_test(Count,23))
+		RawCount|=0xFF800000;
+
+	g_lWS_DAT_1_COUNT = RawCount;
+		
+	output_low(WS_CLK_1);   // start new conversion
 }
 
 Int32 Ticker, second;
@@ -207,22 +229,30 @@ void INIT_HARDWARE(void)	//  initialize system hardware config
 {   
 	setup_adc_ports(NO_ANALOGS);
 	set_tris_b(0b0000001111000000);
-	set_tris_d(0xFFFF);	  
+	set_tris_d(0xFFFF);
 	enable_interrupts(INT_EXT0);
 	ext_int_edge(0,H_TO_L);
 	enable_interrupts(INT_EXT1);
+	ext_int_edge(1, H_TO_L);	
 	enable_interrupts(INT_EXT2);
 	ext_int_edge(2, H_TO_L);
 	enable_interrupts(INT_RDA); 
 	enable_interrupts(INTR_GLOBAL);
 
-	output_low(WS_CLK);
+//	output_low(WS_CLK_2);
 	
 	g_lP0 = READ_INT32_EEPROM(0x0000);
 	g_fP1 = READ_FLOAT_EEPROM(0x0020);
 	
 }
 
+signed int32 Filter(signed int32 NewValue)
+{
+	signed int32 NewReading, OldReading;
+	NewReading = OldReading + (NewValue - OldReading)>>8;
+	OldReading = newReading;
+	return NewReading;
+}
 //============================================
 //  
 //  RTOS Tasks
@@ -236,7 +266,7 @@ void SET_SPAN(void);
 
 void Terminal (void);
 
-void Beat(void);
+void _Beat(void);
 
 void GetWeightData(void);
 
@@ -244,12 +274,12 @@ void Update_Host(void);
 
 void Process(void);
 
-void Fill(void);	// llenar
+void _Fill(void);	// llenar
 
-void Dump (void);	// descargar
+void _Dump (void);	// descargar
 
-void Beat(void){
-	output_toggle(AUX2);
+void _Beat(void){
+	output_toggle(BEAT);
 	restart_wdt();
 }
 
@@ -258,7 +288,7 @@ void Start_Process()
 	cout<<"Process started20/03/2015 13:01:54"<<endl;
 	g_bStart = TRUE;
 	g_bFillDone = true;
-	Dump();
+	_Dump();
 }
 
 void GetWeight(void)   // read Weight data
@@ -268,9 +298,9 @@ void GetWeight(void)   // read Weight data
 	float fCREDIT, fSCALAR;
 	int tmp;
 
-	if(g_bGotWeightData){
+//	if(g_bGotWeightData){
 		
-		g_lPeso = g_lWeighCount - g_lP0 ;   // ajuste del CERO
+		g_lPeso = g_lWS_DAT_2_COUNT - g_lP0 ;   // ajuste del CERO
 		
 		lDelta = g_lPeso - lOld_Peso;
 		if(abs(iCSB) <= AMT1)
@@ -291,18 +321,18 @@ void GetWeight(void)   // read Weight data
 		lOld_Peso = g_fPeso;
 			
 		g_fPeso = floor(g_fP1 * g_lPeso/0.005)*0.005;   // peso calibrado
-//	g_fPeso = floor(g_fP1 * g_lPeso/0.05)*0.05;   // peso calibrado
+//		g_fPeso = floor(g_fP1 * g_lPeso/0.05)*0.05;   // peso calibrado
 		
-		if(g_fPeso>g_fTarget)	// Update SetPoints
+		if(g_fPeso > g_fTarget)	// Update SetPoints
 		{
-			output_high(EV2);
+			output_high(FILL);
 			g_bFillDone = true;
 			g_sOutputs[0]=' ';
-			//Dump();
+			//_Dump();
 		}
-		else if(g_fPeso<g_fPesoMin)
+		else if(g_fPeso < g_fPesoMin)
 		{   
-			output_low(EV3);
+			output_low(FILL);
 			g_bDumped = true;
 		}
 		
@@ -314,14 +344,14 @@ void GetWeight(void)   // read Weight data
 			UpdHost = 0;
 		}
 				
-	}	
+//	}	
 }
 
-void Fill(void)   //   ciclo de llenado
+void _Fill(void)   //   ciclo de llenado
 {
 	g_sOutputs[0]='F';
-	output_low(EV2);
-	output_high(EV1);
+	output_low(DUMP);
+	output_high(FILL);
 	set_ticks(0);
 
 }
@@ -334,24 +364,24 @@ void Check_Time_Out(void)
 	
 	if(tmp > 800){
 		set_ticks(0);
-		output_low(EV1);
+		output_low(FILL);
 		//printf("\x1B[17;2H\x1B[Ktimeout %lu %lu ", tmp, cnt++);
 	}
 			
 }
 
-void Dump (void)   //   ciclo de descarga
+void _Dump (void)   //   ciclo de descarga
 {
-	if(DISCH || g_bFillDone){
-		output_high(EV3);
+	if(g_bFillDone){
+		output_high(DUMP);
 		g_bFillDone = false;
-		fill();
+		_Fill();
 	}
 }
 
 void SET_ZERO(void)	// Puesta a cero
 {
-	g_lP0 = g_lWeighCount;
+	g_lP0 = g_lWS_DAT_2_COUNT;
 //   printf(":zP0=%lu, %6u, P1=%e, %6u", g_lP0, zero_cnt++, g_fP1, span_cnt);
 	WRITE_INT32_EEPROM(0x0000, g_lP0);
 }
@@ -363,7 +393,7 @@ void SET_SPAN(void)	// Rango
 
 	for(j=0;j<=100;j++){
 	
-		g_lPeso = g_lWeighCount - g_lP0;
+		g_lPeso = g_lWS_DAT_2_COUNT - g_lP0;
 		
 		g_fNew_Peso = g_fOld_Peso + ((float)g_lPeso - g_fOld_Peso);
 		g_fOld_Peso = g_fNew_Peso;
@@ -478,7 +508,7 @@ void SET_SPAN(void)	// Rango
 
 void Read_Inputs(void)
 {
-	g_sInputs[0]=(zero)?'z':' ';
+/*	g_sInputs[0]=(zero)?'z':' ';
 	g_sInputs[1]=(cal)?'c':' ';
 
 	if(START)
@@ -497,8 +527,7 @@ void Read_Inputs(void)
 		output_high(EV3);
 	}
 	else
-		g_sInputs[4] = ' ';
-		
+		g_sInputs[4] = ' ';*/
 }
 
 void Update_Host(void)
@@ -506,9 +535,9 @@ void Update_Host(void)
 	if(g_bUpdHost)
 	{			
 		if(!g_bKeying)   // user is typing	
-			cout<<g_lRawCount<<endl;	
-//	printf("\x1b[H%10ld, %10ld, %7.3f, %s, %s, %s\x1B[K", g_lRawCount, g_lPeso, g_fPeso, g_sInputs, g_sOutputs, g_sStatus);
-//	printf("%ld,%ld,%f\r\n", g_lRawCount, g_lPeso, g_fPeso);
+			cout<<"P2 "<<filter(g_lWS_DAT_2_COUNT)<<endl;	
+			cout<<"P1 "<<filter(g_lWS_DAT_1_COUNT)<<endl;
+			
 			g_bUpdHost = false;
 	}
 	
@@ -560,7 +589,7 @@ void main()
 				//Terminal();
 				Update_Host();
 				Check_Time_Out();
-				Beat();	// keep alive
+				_Beat();	// keep alive
 			}
 			break;
 		}
@@ -586,5 +615,5 @@ void main()
 		}
 	}
 	while (true)
-		output_toggle(AUX1);	// error trap
+		output_toggle(TP1);	// error trap
 }	

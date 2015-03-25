@@ -1,0 +1,47 @@
+[Project ID]
+	Signature=UE Proj: v.1
+[Project Information]
+	Compilable=1
+	Use Relative Directory=1
+	Relative to Project File=1
+	Include Sub Directories=1
+	Project Tagfile=
+	Project Wordfile=
+	Project TpFile=
+	Filter=
+	Using VCS=0
+	Save Account=0
+	Create Tagfile=0
+	CTags Legacy Support=0
+	Def Out Path=C:\Dropbox\Proyectos\Balanza
+[uemakeXp]
+	Compiler=Configs\CCS C Compiler\Application
+	ReleaseMode=0
+	Files=3391037043
+[Configs\CCS C Compiler\Application]
+	OutputDirectory_ReleaseMode=Release
+	OutputDirectory_DebugMode=Debug
+	Target=Balanza_DSP.HEX
+	Working Directory=.
+	Command Line Arguments=Balanza_DSP.HEX
+	Output Type=8 bit Intel HEX
+	Format=PCD
+	Call Tree=Default
+	List File=Default
+	Stats File=Default
+	Symbol File=Default
+	Optimization=9
+	Compile Status Window=Close
+	Error Level=Show All
+	Debug Type=Standard COD Format
+	Debugger=icd.exe
+	Compiler Options=
+[Debug Settings]
+	Program Arguments=
+	Symbol Paths=
+	Working Directory=
+	Selected Debugger=0
+	Source Paths=
+[Files]
+	0=main.c
+	1=main.h
