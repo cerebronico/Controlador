@@ -28,11 +28,11 @@ ya que esta se hace digitalmente leyendo dos convertidores HX711
 #ZERO_RAM
 
 signed long AMT1, AMT2, AMT3, AMT4, AMT5;
-static signed int32 g_lPeso, g_lWS_DAT_1_COUNT, g_lWS_DAT_2_COUNT, g_lP0;
+static signed int32 g_lPeso, count1, count2, TotalCount, g_lP0;
 float g_fPeso, g_fP1, g_fOld_Peso, g_fNew_Peso;
 float g_fTarget = 2.0, g_fFlow, g_fOver, g_fFreeFall, g_fPesoMin=0.01;
 int8 sem, zero_cnt, span_cnt;
-boolean g_bUpdHost, g_bGotWeightData, g_bKeying, g_bFillDone, g_bDumped, g_bStart;
+boolean g_bUpdHost, g_bGotWeightData, g_bKeying, g_bFillDone, g_bDumped, g_bStart, LC1_DATA_RDY, LC2_DATA_RDY;
 char g_sInputs[] = "     ", g_sOutputs[] = "   ", g_sStatus;
 
 // this character array will be used to take input from the prompt
@@ -133,54 +133,13 @@ void User_Input ( )		// serial port interrupt
 #INT_EXT1	
 void WS_DAT_2_isr(void)   // lectura de convertidor 2, toma 56 us
 { 
-	unsigned int32 Count=0;
-	unsigned char i;
-	signed int32 RawCount;
-	
-	for (i=0;i<24;i++)
-	{ 
-		output_high(WS_CLK_2); 
-		if(i<24) Count=Count<<1;
-		output_low(WS_CLK_2);
-		if(WS_DAT_2 && (i < 24)) Count++; // read input data
-	}    
-	
-	output_high(WS_CLK_2); 
-
-	RawCount = Count;
-	if(bit_test(Count,23))
-		RawCount|=0xFF800000;
-
-	g_lWS_DAT_2_COUNT = RawCount;
-		
-	output_low(WS_CLK_2);   // start new conversion
-//	g_bGotWeightData = True;
+	LC2_DATA_RDY = true;
 }
 
 #INT_EXT2
 void WS_DAT_1_isr(void)   // lectura de convertidor 2, toma 56 us
 { 
-	unsigned int32 Count=0;
-	unsigned char i; 
-	signed int32 RawCount;
-		
-	for (i=0;i<24;i++)
-	{ 
-		output_high(WS_CLK_1); 
-		if(i<24) Count=Count<<1;
-		output_low(WS_CLK_1);
-		if(WS_DAT_1 && (i < 24)) Count++; 
-	}    
-	
-	output_high(WS_CLK_1); 
-
-	RawCount = Count;
-	if(bit_test(Count,23))
-		RawCount|=0xFF800000;
-
-	g_lWS_DAT_1_COUNT = RawCount;
-		
-	output_low(WS_CLK_1);   // start new conversion
+	LC1_DATA_RDY = true;
 }
 
 Int32 Ticker, second;
@@ -260,6 +219,8 @@ signed int32 Filter(signed int32 NewValue)
 //============================================
 void Task_Disabler();
 
+void READ_HX711();
+
 void SET_ZERO(void);
 
 void SET_SPAN(void);
@@ -274,13 +235,61 @@ void Update_Host(void);
 
 void Process(void);
 
-void _Fill(void);	// llenar
+void FILL(void);	// llenar
 
-void _Dump (void);	// descargar
+void DUMP (void);	// descargar
 
 void _Beat(void){
-	output_toggle(BEAT);
+	BEAT;
 	restart_wdt();
+}
+
+void READ_HX711()
+{
+	unsigned int32 Count;
+	unsigned char i; 
+
+	if(LC1_DATA_RDY){
+		Count=0;
+		for (i=0;i<24;i++)
+		{ 
+			output_high(WS_CLK_1); 
+			if(i<24) Count=Count<<1;
+			output_low(WS_CLK_1);
+			if(WS_DAT_1 && (i < 24)) Count++; 
+		}    
+		
+		output_high(WS_CLK_1); 
+	
+		count1 = Count;
+		if(bit_test(Count,23))
+			Count1|=0xFF800000;
+			
+		output_low(WS_CLK_1);   // start new conversion
+		LC1_DATA_RDY = false;
+	}
+	
+	if(LC2_DATA_RDY){
+		Count=0;				// re-init counter
+		for (i=0;i<24;i++)
+		{ 
+			output_high(WS_CLK_2); 
+			if(i<24) Count=Count<<1;
+			output_low(WS_CLK_2);
+			if(WS_DAT_2 && (i < 24)) Count++; 
+		}    
+		
+		output_high(WS_CLK_2); 
+	
+		Count2 = Count;
+		if(bit_test(Count,23))
+			count2|=0xFF800000;
+			
+		output_low(WS_CLK_2);   // start new conversion	
+		LC2_DATA_RDY = false;
+	}
+	
+	TotalCount = count1 + count2;
 }
 
 void Start_Process()
@@ -288,7 +297,7 @@ void Start_Process()
 	cout<<"Process started20/03/2015 13:01:54"<<endl;
 	g_bStart = TRUE;
 	g_bFillDone = true;
-	_Dump();
+	DUMP();
 }
 
 void GetWeight(void)   // read Weight data
@@ -300,7 +309,7 @@ void GetWeight(void)   // read Weight data
 
 //	if(g_bGotWeightData){
 		
-		g_lPeso = g_lWS_DAT_2_COUNT - g_lP0 ;   // ajuste del CERO
+		g_lPeso = TotalCount - g_lP0 ;   // ajuste del CERO
 		
 		lDelta = g_lPeso - lOld_Peso;
 		if(abs(iCSB) <= AMT1)
@@ -321,18 +330,17 @@ void GetWeight(void)   // read Weight data
 		lOld_Peso = g_fPeso;
 			
 		g_fPeso = floor(g_fP1 * g_lPeso/0.005)*0.005;   // peso calibrado
-//		g_fPeso = floor(g_fP1 * g_lPeso/0.05)*0.05;   // peso calibrado
 		
 		if(g_fPeso > g_fTarget)	// Update SetPoints
 		{
-			output_high(FILL);
+			FILL_ON;
 			g_bFillDone = true;
 			g_sOutputs[0]=' ';
-			//_Dump();
+			//DUMP();
 		}
 		else if(g_fPeso < g_fPesoMin)
 		{   
-			output_low(FILL);
+			FILL_OFF;
 			g_bDumped = true;
 		}
 		
@@ -347,11 +355,11 @@ void GetWeight(void)   // read Weight data
 //	}	
 }
 
-void _Fill(void)   //   ciclo de llenado
+void FILL(void)   //   ciclo de llenado
 {
 	g_sOutputs[0]='F';
-	output_low(DUMP);
-	output_high(FILL);
+	DUMP_OFF;
+	FILL_ON;
 	set_ticks(0);
 
 }
@@ -364,25 +372,25 @@ void Check_Time_Out(void)
 	
 	if(tmp > 800){
 		set_ticks(0);
-		output_low(FILL);
+		FILL_OFF;
 		//printf("\x1B[17;2H\x1B[Ktimeout %lu %lu ", tmp, cnt++);
 	}
 			
 }
 
-void _Dump (void)   //   ciclo de descarga
+void DUMP (void)   //   ciclo de descarga
 {
 	if(g_bFillDone){
-		output_high(DUMP);
+		DUMP_ON;
 		g_bFillDone = false;
-		_Fill();
+		FILL();
 	}
 }
 
 void SET_ZERO(void)	// Puesta a cero
 {
-	g_lP0 = g_lWS_DAT_2_COUNT;
-//   printf(":zP0=%lu, %6u, P1=%e, %6u", g_lP0, zero_cnt++, g_fP1, span_cnt);
+	g_lP0 = TotalCount;
+
 	WRITE_INT32_EEPROM(0x0000, g_lP0);
 }
 
@@ -393,16 +401,14 @@ void SET_SPAN(void)	// Rango
 
 	for(j=0;j<=100;j++){
 	
-		g_lPeso = g_lWS_DAT_2_COUNT - g_lP0;
+		g_lPeso = TotalCount - g_lP0;
 		
 		g_fNew_Peso = g_fOld_Peso + ((float)g_lPeso - g_fOld_Peso);
 		g_fOld_Peso = g_fNew_Peso;
-//	printf(":j%6u",j);
+
 	}
 	
 	g_fP1 = 0.8/g_fNew_Peso;
-	//printf("\x1B[3;1HP0=%lu, %6u, P1=%e, %6u\x1B[K", g_lP0, zero_cnt, g_fP1, span_cnt++);
-	//WRITE_FLOAT_EEPROM(0x0020, g_fP1);
 	
 }
 
@@ -535,14 +541,11 @@ void Update_Host(void)
 	if(g_bUpdHost)
 	{			
 		if(!g_bKeying)   // user is typing	
-			cout<<"P2 "<<filter(g_lWS_DAT_2_COUNT)<<endl;	
-			cout<<"P1 "<<filter(g_lWS_DAT_1_COUNT)<<endl;
-			
+
+			cout<<TotalCount<<endl;			
 			g_bUpdHost = false;
 	}
 	
-	//set_ticks(0);
-	//}  
 }
 
 //=================================
@@ -584,6 +587,7 @@ void main()
 		{
 			while(true)
 			{
+				READ_HX711();
 				GetWeight();
 				Read_Inputs();
 				//Terminal();
