@@ -1,7 +1,7 @@
 [PROJECT]
 Target=main.hex
 Processor_Text=DSPIC30F3013
-CCSVersion=5.042
+CCSVersion=5.044
 Compiler=PCD
 Development_Mode=
 ToolSuite=CCS

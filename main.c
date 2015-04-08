@@ -28,7 +28,7 @@ ya que esta se hace digitalmente leyendo dos convertidores HX711
 #ZERO_RAM
 
 signed long AMT1, AMT2, AMT3, AMT4, AMT5;
-static signed int32 g_lPeso, count1, count2, TotalCount, g_lP0;
+static signed int32 g_lPeso, count1, count2, CountTotal, g_lP0;
 float g_fPeso, g_fP1, g_fOld_Peso, g_fNew_Peso;
 float g_fTarget = 2.0, g_fFlow, g_fOver, g_fFreeFall, g_fPesoMin=0.01;
 int8 sem, zero_cnt, span_cnt;
@@ -42,7 +42,7 @@ char usr_input[30];
 int index;
 
 // this will signal to the kernal that input is ready to be processed
-int1 input_ready;
+boolean input_ready;
 
 // different commands
 enum _Menu { GetWeightCounts, SetZero, SetSpan, SetCalWeight } MnuConfig;
@@ -229,7 +229,7 @@ void Terminal (void);
 
 void _Beat(void);
 
-void GetWeightData(void);
+void ConvertWeight(int32 cnt);
 
 void Update_Host(void);
 
@@ -246,50 +246,57 @@ void _Beat(void){
 
 void READ_HX711()
 {
-	unsigned int32 Count;
+	unsigned int32 cntLC1=0, cntLC2=0;
 	unsigned char i; 
-
-	if(LC1_DATA_RDY){
-		Count=0;
+	
+	if(LC1_DATA_RDY){			// converter 1 has data
+		
 		for (i=0;i<24;i++)
 		{ 
 			output_high(WS_CLK_1); 
-			if(i<24) Count=Count<<1;
+			
+			if(i<24) 
+				cntLC1 = cntlc1 << 1;
+			
 			output_low(WS_CLK_1);
-			if(WS_DAT_1 && (i < 24)) Count++; 
+			if(WS_DAT_1) cntLC1++; 
 		}    
 		
 		output_high(WS_CLK_1); 
 	
-		count1 = Count;
-		if(bit_test(Count,23))
-			Count1|=0xFF800000;
-			
+		count1 = cntLC1;
+		if(bit_test(cntLC1,23))
+			count1|=0xFF800000;
 		output_low(WS_CLK_1);   // start new conversion
 		LC1_DATA_RDY = false;
 	}
 	
-	if(LC2_DATA_RDY){
-		Count=0;				// re-init counter
+	if(LC2_DATA_RDY){			// converter 1 has data
+		
 		for (i=0;i<24;i++)
 		{ 
-			output_high(WS_CLK_2); 
-			if(i<24) Count=Count<<1;
+			output_high(WS_CLK_2);
+			
+			if(i<24)
+				cntLC2 = cntLC2 << 1;
+			
 			output_low(WS_CLK_2);
-			if(WS_DAT_2 && (i < 24)) Count++; 
+			if(WS_DAT_2) cntLC2++;				
 		}    
 		
 		output_high(WS_CLK_2); 
 	
-		Count2 = Count;
-		if(bit_test(Count,23))
-			count2|=0xFF800000;
-			
+		count2 = cntLC2;
+		if(bit_test(cntLC2,23))
+			count2|=0xFF800000;			
 		output_low(WS_CLK_2);   // start new conversion	
 		LC2_DATA_RDY = false;
 	}
+		
+	CountTotal = count1 + count2;
+	//ConvertWeight(CountTotal);
+	g_bUpdHost= true;
 	
-	TotalCount = count1 + count2;
 }
 
 void Start_Process()
@@ -300,16 +307,14 @@ void Start_Process()
 	DUMP();
 }
 
-void GetWeight(void)   // read Weight data
+void ConvertWeight(int32 cnt)   // read Weight data
 {
 	int32 lDelta, lNew, lOld_Peso;
 	static int iCSB, UpdHost;
 	float fCREDIT, fSCALAR;
 	int tmp;
 
-//	if(g_bGotWeightData){
-		
-		g_lPeso = TotalCount - g_lP0 ;   // ajuste del CERO
+	g_lPeso = cnt - g_lP0 ;   // ajuste del CERO
 		
 		lDelta = g_lPeso - lOld_Peso;
 		if(abs(iCSB) <= AMT1)
@@ -329,7 +334,7 @@ void GetWeight(void)   // read Weight data
 		g_fPeso = lOld_Peso + (lDelta/(pow(fSCALAR,2) + AMT5));
 		lOld_Peso = g_fPeso;
 			
-		g_fPeso = floor(g_fP1 * g_lPeso/0.005)*0.005;   // peso calibrado
+		g_fPeso = floor(g_fP1 * g_lPeso/0.02)*0.02;   // peso calibrado
 		
 		if(g_fPeso > g_fTarget)	// Update SetPoints
 		{
@@ -350,9 +355,7 @@ void GetWeight(void)   // read Weight data
 		{
 			g_bUpdHost = true;
 			UpdHost = 0;
-		}
-				
-//	}	
+		}	
 }
 
 void FILL(void)   //   ciclo de llenado
@@ -372,7 +375,7 @@ void Check_Time_Out(void)
 	
 	if(tmp > 800){
 		set_ticks(0);
-		FILL_OFF;
+		//FILL_OFF;
 		//printf("\x1B[17;2H\x1B[Ktimeout %lu %lu ", tmp, cnt++);
 	}
 			
@@ -389,7 +392,7 @@ void DUMP (void)   //   ciclo de descarga
 
 void SET_ZERO(void)	// Puesta a cero
 {
-	g_lP0 = TotalCount;
+	g_lP0 = CountTotal;
 
 	WRITE_INT32_EEPROM(0x0000, g_lP0);
 }
@@ -401,7 +404,7 @@ void SET_SPAN(void)	// Rango
 
 	for(j=0;j<=100;j++){
 	
-		g_lPeso = TotalCount - g_lP0;
+		g_lPeso = CountTotal - g_lP0;
 		
 		g_fNew_Peso = g_fOld_Peso + ((float)g_lPeso - g_fOld_Peso);
 		g_fOld_Peso = g_fNew_Peso;
@@ -412,38 +415,34 @@ void SET_SPAN(void)	// Rango
 	
 }
 
-/*void Terminal (void)
+void Terminal (void)
 {
 	if(!input_ready) return;
 			
 	switch(MnuConfig)
 	{
 	case SetCalWeight:
-	g_fTarget = atof(usr_input);
-//	printf("\x1B[2;5H\x1B[2KTarget Weight: %f ", g_fTarget);
-		MENU(1);
+		g_fTarget = atof(usr_input);
+		//MENU(1);
 		break;
 		
 	case SetZero:
 		switch (usr_input)
 		{
 		case "f":
-//		  printf ( "\x1B[2;5H\x1B[2KTarget Weight?" );
-			MENU(2);
+		//	MENU(2);
 			break;
 			
 		case "s":
-//		  printf ( "\x1B[2;5H\x1B[2KPreliminar?" );
-			MENU(3);
+		//	MENU(3);
 			break;
 		
 		case "r":
-//		  printf ( "\x1B[2;5H\x1B[2KFree Fall?" );
-			MENU(4);
+		//	MENU(4);
 			break;
 		
 		case "t":
-			MENU(0);
+		//	MENU(0);
 
 		default:
 			break;
@@ -452,15 +451,13 @@ void SET_SPAN(void)	// Rango
 		break;
 		
 	default:		
-//	printf ( "\x1B[15;10H %s\x1B[K", usr_input );
+
 		switch (usr_input){
 		case "c":
-//		 printf ( "\x1B[2;5HSPANNING\x1B[K" );
 			 set_span();
 			break;
 		
 		case "z":
-//		  printf ( "\x1B[2;5HZEROING\x1B[K" );
 		  set_zero();
 			break;
 			
@@ -470,47 +467,47 @@ void SET_SPAN(void)	// Rango
 			
 		case "p":	// stop
 			cout<<"\x1B[2;5HStop req'd\x1B[K"<<endl;
-			output_low(EV1);
-			output_low(EV2);
-			output_low(EV3);
+			DUMP_OFF;
+			FILL_OFF;
 			g_bStart = FALSE;
 			break;
 			
 		case "o":	// open
 			cout<<"\x1B[2;5HOpening\x1B[K"<<endl;
-			output_low(EV2);
+			DUMP_OFF;
 			delay_ms(50);
-			output_high(EV1);
-			set_ticks(0);
+			FILL_ON;
+			//set_ticks(0);
 			break;
 			
 		case "l":   // close
 			cout<<"\x1B[2;5HClosing\x1B[K"<<endl;
-			output_low(EV1);
-			output_high(EV2);
+			FILL_OFF;
+			DUMP_ON;
 			break;
 			
 		case "d":
 			cout<<"\x1B[2;5HDumping\x1B[K"<<endl;
-			output_high(EV3);
+			cal_on;
+			FILL_ON;
+			DUMP_ON;
 		break;
 
 		case "a":
-			MENU(1);
+			//MENU(1);
 		break;
 
 		default:
-//		printf ( "\x1B[2;5H\x1B[2KError: unknown command" );
 		break;
 		}
 	
 		break;
-}
+	}
 	
 	input_ready=FALSE;
 	index=0;
 	g_bKeying = false;
-}*/
+}
 
 void Read_Inputs(void)
 {
@@ -542,7 +539,7 @@ void Update_Host(void)
 	{			
 		if(!g_bKeying)   // user is typing	
 
-			cout<<TotalCount<<endl;			
+			cout<<CountTotal<<","<<g_fPeso<<endl;			
 			g_bUpdHost = false;
 	}
 	
@@ -573,11 +570,11 @@ void main()
 	input_ready=FALSE;
 	
 	// smart filter params
-	AMT1 = 2;
-	AMT2 = 3;
-	AMT3 = 20;
+	AMT1 = 20;
+	AMT2 = 16;
+	AMT3 = 4;
 	AMT4 = 8;
-	AMT5 = 1;
+	AMT5 = 4;
 	
 	switch (restart_cause()){
 		case RESTART_MCLR:
@@ -588,9 +585,8 @@ void main()
 			while(true)
 			{
 				READ_HX711();
-				GetWeight();
 				Read_Inputs();
-				//Terminal();
+				Terminal();
 				Update_Host();
 				Check_Time_Out();
 				_Beat();	// keep alive
