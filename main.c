@@ -18,18 +18,19 @@ ya que esta se hace digitalmente leyendo dos convertidores HX711
 //  Weighing parameter define
 //============================================  
 
-#define LO_FILTER 6
-#define HI_FILTER   100
+int AMT1, AMT2, AMT3, AMT4, AMT5;		// smmart filter parameters
+signed int32 delta, CREDIT, SCALAR;
+signed int iCSB;
 
 //============================================
 //  global variable define
 //============================================
 
 #ZERO_RAM
+boolean newCount;
 
-signed long AMT1, AMT2, AMT3, AMT4, AMT5;
-static signed int32 g_lPeso, count1, count2, CountTotal, g_lP0;
-float g_fPeso, g_fP1, g_fOld_Peso, g_fNew_Peso;
+signed int32 g_lPeso, count1, count2, CountTotal, g_lP0, g_lP1;
+float g_fPeso, g_fOld_Peso, g_fNew_Peso;
 float g_fTarget = 2.0, g_fFlow, g_fOver, g_fFreeFall, g_fPesoMin=0.01;
 int8 sem, zero_cnt, span_cnt;
 boolean g_bUpdHost, g_bGotWeightData, g_bKeying, g_bFillDone, g_bDumped, g_bStart, LC1_DATA_RDY, LC2_DATA_RDY;
@@ -41,7 +42,7 @@ char usr_input[30];
 // this will hold the current position in the array
 int index;
 
-// this will signal to the kernal that input is ready to be processed
+// this will signal to the kernel that input is ready to be processed
 boolean input_ready;
 
 // different commands
@@ -61,8 +62,6 @@ typedef union
 //  procedure define
 //============================================
 void INIT_HARDWARE(void);
-void Open (void);		// abrir compuerta de llenado
-void Close (void);		// cerrar compuerta de llenado
 
 //============================================
 //  interrupt service
@@ -73,7 +72,7 @@ void Close (void);		// cerrar compuerta de llenado
 unsigned int32 trapaddr = 0;
 
 #INT_ADDRERR				 //Address error trap
-void ae_isr(void)
+void AE_ISR(void)
 {
 	#asm
 	mov w15,w0   
@@ -89,14 +88,14 @@ void ae_isr(void)
 }
 
 #INT_MATHERR
-void math_err(void)   //Fallo matemático
+void MATH_ERR(void)   //Fallo matemático
 {
 	printf("error matemático\r\n");
 	while(TRUE);
 }
 
 #INT_RDA 
-void User_Input ( )		// serial port interrupt
+void USER_INPUT ( )		// serial port interrupt
 {
 	g_bKeying = true;
 	if(index<29){
@@ -130,17 +129,60 @@ void User_Input ( )		// serial port interrupt
 	}
 }
 
-#INT_EXT1	
-void WS_DAT_2_isr(void)   // lectura de convertidor 2, toma 56 us
-{ 
+#INT_EXT1
+void WS_DAT_1_isr(void)   // lectura de convertidor 2, toma 56 us
+{
+	int32 count=0;
+	char i;  
+	for (i=0;i<24;i++)
+	{ 
+		output_high(WS_CLK_2);
+		
+		if(i<24)
+			count = count << 1;
+		
+		output_low(WS_CLK_2);
+		if(WS_DAT_2) count++;				
+	}    
+	
+	output_high(WS_CLK_2); 
+
+	count2 = count;
+	if(bit_test(count,23))
+		count2|=0xFF800000;			
+	output_low(WS_CLK_2);   // start new conversion
+
 	LC2_DATA_RDY = true;
 }
 
-#INT_EXT2
-void WS_DAT_1_isr(void)   // lectura de convertidor 2, toma 56 us
+#INT_EXT2	
+void WS_DAT_2_isr(void)   // lectura de convertidor 2, toma 56 us
 { 
+	int32 count=0;
+	 char i; 
+	
+	for (i=0;i<24;i++)
+	{ 
+		output_high(WS_CLK_1); 
+		
+		if(i<24) 
+			count = count << 1;
+		
+		output_low(WS_CLK_1);
+		if(WS_DAT_1) count++; 
+	}    
+	
+	output_high(WS_CLK_1); 
+
+	count1 = count;
+	if(bit_test(count,23))
+		count1|=0xFF800000;
+	output_low(WS_CLK_1);   // start new conversion	
+
 	LC1_DATA_RDY = true;
 }
+
+
 
 Int32 Ticker, second;
 //#int_TIMER1
@@ -198,20 +240,14 @@ void INIT_HARDWARE(void)	//  initialize system hardware config
 	enable_interrupts(INT_RDA); 
 	enable_interrupts(INTR_GLOBAL);
 
-//	output_low(WS_CLK_2);
+	output_low(WS_CLK_1);	// HX711 normal operation
+	output_low(WS_CLK_2);	//
 	
-	g_lP0 = READ_INT32_EEPROM(0x0000);
-	g_fP1 = READ_FLOAT_EEPROM(0x0020);
-	
+//	g_lP0 = READ_INT32_EEPROM(0x0000);
+//	g_fP1 = READ_FLOAT_EEPROM(0x0020);
+
 }
 
-signed int32 Filter(signed int32 NewValue)
-{
-	signed int32 NewReading, OldReading;
-	NewReading = OldReading + (NewValue - OldReading)>>8;
-	OldReading = newReading;
-	return NewReading;
-}
 //============================================
 //  
 //  RTOS Tasks
@@ -225,81 +261,36 @@ void SET_ZERO(void);
 
 void SET_SPAN(void);
 
-void Terminal (void);
+void TERMINAL (void);
 
-void _Beat(void);
+void _BEAT(void);
 
-void ConvertWeight(int32 cnt);
+void CONVERT_WEIGHT(int32 cnt);
 
-void Update_Host(void);
+void UPDATE_HOST(void);
 
-void Process(void);
+void PROCESS(void);
 
 void FILL(void);	// llenar
 
 void DUMP (void);	// descargar
 
-void _Beat(void){
+void _BEAT(void){
 	BEAT;
 	restart_wdt();
 }
 
 void READ_HX711()
 {
-	unsigned int32 cntLC1=0, cntLC2=0;
-	unsigned char i; 
-	
-	if(LC1_DATA_RDY){			// converter 1 has data
-		
-		for (i=0;i<24;i++)
-		{ 
-			output_high(WS_CLK_1); 
-			
-			if(i<24) 
-				cntLC1 = cntlc1 << 1;
-			
-			output_low(WS_CLK_1);
-			if(WS_DAT_1) cntLC1++; 
-		}    
-		
-		output_high(WS_CLK_1); 
-	
-		count1 = cntLC1;
-		if(bit_test(cntLC1,23))
-			count1|=0xFF800000;
-		output_low(WS_CLK_1);   // start new conversion
-		LC1_DATA_RDY = false;
+	if(LC1_DATA_RDY & LC2_DATA_RDY){		
+		CountTotal = count1 + count2;
+
+		LC1_DATA_RDY = LC2_DATA_RDY = false;
+		newCount = true;
 	}
-	
-	if(LC2_DATA_RDY){			// converter 1 has data
-		
-		for (i=0;i<24;i++)
-		{ 
-			output_high(WS_CLK_2);
-			
-			if(i<24)
-				cntLC2 = cntLC2 << 1;
-			
-			output_low(WS_CLK_2);
-			if(WS_DAT_2) cntLC2++;				
-		}    
-		
-		output_high(WS_CLK_2); 
-	
-		count2 = cntLC2;
-		if(bit_test(cntLC2,23))
-			count2|=0xFF800000;			
-		output_low(WS_CLK_2);   // start new conversion	
-		LC2_DATA_RDY = false;
-	}
-		
-	CountTotal = count1 + count2;
-	//ConvertWeight(CountTotal);
-	g_bUpdHost= true;
-	
 }
 
-void Start_Process()
+void START_PROCESS()
 {
 	cout<<"Process started20/03/2015 13:01:54"<<endl;
 	g_bStart = TRUE;
@@ -307,55 +298,60 @@ void Start_Process()
 	DUMP();
 }
 
-void ConvertWeight(int32 cnt)   // read Weight data
+void CONVERT_WEIGHT()   // read Weight data
 {
-	int32 lDelta, lNew, lOld_Peso;
-	static int iCSB, UpdHost;
-	float fCREDIT, fSCALAR;
+	static signed int32 old_cnt;
+	signed int32 lNew;
+	static signed int UpdHost;
 	int tmp;
 
-	g_lPeso = cnt - g_lP0 ;   // ajuste del CERO
+	if(newCount){
 		
-		lDelta = g_lPeso - lOld_Peso;
-		if(abs(iCSB) <= AMT1)
-			fCREDIT = lDelta / AMT2;
+		g_lPeso = CountTotal - g_lP0 ;   // ajuste del CERO
+		
+		delta = CountTotal - old_cnt;
+		if(abs(iCSB) >= AMT1)
+			CREDIT = delta / AMT2;
 		else 
-			fCREDIT = 0;
+			CREDIT = 0;
 			
-		if(((lDelta >= 0) && (iCSB < 0)) || ((lDelta <= 0) && (iCSB > 0)) || (abs(lDelta) < AMT3))
+		if(((delta >= 0) && (iCSB < 0)) || ((delta <= 0) && (iCSB > 0)) || (abs(delta) < AMT3))
 			iCSB = 0;   
 		else
-			iCSB = fCREDIT + iCSB + ((lDelta > 0) ? 1 : ((lDelta < 0) ? -1 : 0));
+			iCSB = CREDIT + iCSB + ((delta > 0) ? 1 : ((delta < 0) ? -1 : 0));
 		
-		tmp = (AMT4-ABS(iCSB));
+		tmp = (AMT4-abs(iCSB));
 		
-		fSCALAR = (tmp>0)?tmp:0;
+		SCALAR = (tmp>0)?tmp:0;
 		
-		g_fPeso = lOld_Peso + (lDelta/(pow(fSCALAR,2) + AMT5));
-		lOld_Peso = g_fPeso;
+		old_cnt = old_cnt + (delta/(pow(SCALAR,2) + AMT5));
+		
+		g_lPeso = old_cnt;
+/*			g_fPeso;
+				
+			g_fPeso = floor(g_fP1 * g_lPeso/0.02)*0.02;   // peso calibrado
 			
-		g_fPeso = floor(g_fP1 * g_lPeso/0.02)*0.02;   // peso calibrado
-		
-		if(g_fPeso > g_fTarget)	// Update SetPoints
-		{
-			FILL_ON;
-			g_bFillDone = true;
-			g_sOutputs[0]=' ';
-			//DUMP();
-		}
-		else if(g_fPeso < g_fPesoMin)
-		{   
-			FILL_OFF;
-			g_bDumped = true;
-		}
-		
-		g_bGotWeightData = false;
-
-		if(UpdHost++>10)
-		{
-			g_bUpdHost = true;
-			UpdHost = 0;
-		}	
+			if(g_fPeso > g_fTarget)	// Update SetPoints
+			{
+				FILL_ON;
+				g_bFillDone = true;
+				g_sOutputs[0]=' ';
+				//DUMP();
+			}
+			else if(g_fPeso < g_fPesoMin)
+			{   
+				FILL_OFF;
+				g_bDumped = true;
+			}*/
+			
+			newCount = false;
+	
+			if(UpdHost++>1)
+			{
+				g_bUpdHost = true;
+				UpdHost = 0;
+			}	
+	}
 }
 
 void FILL(void)   //   ciclo de llenado
@@ -367,7 +363,7 @@ void FILL(void)   //   ciclo de llenado
 
 }
 
-void Check_Time_Out(void)
+void CHECK_TIME_OUT(void)
 {   
 	static unsigned long cnt;
 	int32 tmp;
@@ -411,11 +407,11 @@ void SET_SPAN(void)	// Rango
 
 	}
 	
-	g_fP1 = 0.8/g_fNew_Peso;
+//	g_fP1 = 0.8/g_fNew_Peso;
 	
 }
 
-void Terminal (void)
+void TERMINAL (void)
 {
 	if(!input_ready) return;
 			
@@ -462,7 +458,7 @@ void Terminal (void)
 			break;
 			
 		case "s":
-			Start_Process();
+			START_PROCESS();
 			break;
 			
 		case "p":	// stop
@@ -533,13 +529,13 @@ void Read_Inputs(void)
 		g_sInputs[4] = ' ';*/
 }
 
-void Update_Host(void)
+void UPDATE_HOST(void)
 {
 	if(g_bUpdHost)
 	{			
 		if(!g_bKeying)   // user is typing	
 
-			cout<<CountTotal<<","<<g_fPeso<<endl;			
+			cout << CountTotal << ", " << count1 << ", " << count2 << ", " << g_lPeso << ", " << delta << ", " << CREDIT << ", " << iCSB << ", " << SCALAR << endl;			
 			g_bUpdHost = false;
 	}
 	
@@ -554,7 +550,7 @@ void Update_Host(void)
 //		auto cero
 //		envio de setpoint por puerto serie
 	
-void main()
+void MAIN()
 {
 	INIT_HARDWARE();
 	TICK_TYPE CurrentTick,PreviousTick;
@@ -570,11 +566,11 @@ void main()
 	input_ready=FALSE;
 	
 	// smart filter params
-	AMT1 = 20;
-	AMT2 = 16;
-	AMT3 = 4;
+	AMT1 = 50;
+	AMT2 = 20;
+	AMT3 = 2;
 	AMT4 = 8;
-	AMT5 = 4;
+	AMT5 = 1;
 	
 	switch (restart_cause()){
 		case RESTART_MCLR:
@@ -585,11 +581,12 @@ void main()
 			while(true)
 			{
 				READ_HX711();
+				CONVERT_WEIGHT();
 				Read_Inputs();
-				Terminal();
-				Update_Host();
-				Check_Time_Out();
-				_Beat();	// keep alive
+				TERMINAL();
+				UPDATE_HOST();
+				CHECK_TIME_OUT();
+				_BEAT();	// keep alive
 			}
 			break;
 		}
