@@ -22,7 +22,7 @@ AdditionalOptionString=
 1=main.c
 
 [ProjectLog]
-Days=17
+Days=18
 D1=03-09-2014
 D1_L=6
 D1_L1=[57953]Project Opened.
@@ -30,8 +30,8 @@ D1_L2=[58001]Started Debugging.
 D1_L3=[59050]Stopped Debugging.
 D1_L4=[59472]Started Debugging.
 D1_L5=[60399]Stopped Debugging.
-TotalEdit=55
-TotalDebug=13
+TotalEdit=57
+TotalDebug=47
 D1_E=0
 D1_D=13
 D1_L6=[63021]Project Closed.
@@ -184,15 +184,39 @@ D17=20-03-2015
 D17_L=2
 D17_L1=[41179]Project Opened.
 D17_L2=[41222]Project Closed.
+D18=11-04-2015
+D18_L=20
+D18_L1=[54071]Project Opened.
+D18_L2=[54520]Started Editing.
+D18_L3=[54601]Stopped Editing.
+D18_L4=[54601]Started Debugging.
+D18_L5=[55530]Stopped Debugging.
+D18_E=2
+D18_D=34
+D18_L6=[55530]Project Closed.
+D18_L7=[55538]Project Opened.
+D18_L8=[55578]Started Debugging.
+D18_L9=[56399]Stopped Debugging.
+D18_L10=[56550]Started Debugging.
+D18_L11=[56560]Stopped Debugging.
+D18_L12=[56560]Project Closed.
+D18_L13=[56568]Project Opened.
+D18_L14=[56622]Started Debugging.
+D18_L15=[56811]Stopped Debugging.
+D18_L16=[56811]Project Closed.
+D18_L17=[56908]Project Opened.
+D18_L18=[57063]Started Debugging.
+D18_L19=[57640]Stopped Debugging.
+D18_L20=[57640]Project Closed.
 
 [Opened Files]
-1=main.c
-2=main.h
-t1=137
-Count=2
-t2=21
-3=..\..\..\..\Program Files (x86)\PICC\Devices\30F3013.h
-t3=515
+1=main.h
+2=main.c
+t1=1
+Count=3
+t2=1
+3=main.sta
+t3=-1
 4=main.tre
 t4=-1
 5=main.sym
@@ -206,12 +230,14 @@ selected=Analog to Digital Converter 1
 [debugbreak]
 count=1
 f1=C:\Dropbox\Proyectos\Balanza\Controlador\main.c
-l1=309
-a.1=7008
+l1=398
+a.1=7950
 
 [debugwatch]
-e1=i
-count=1
+e1=1/(float)2
+count=3
+e2=(float)1/2
+e3=1/2
 
 [debugexpr]
 expr=
@@ -228,7 +254,7 @@ enabled=0
 chip=1
 D1=
 V1=
-buildcount=14
+buildcount=21
 
 [fileformats]
 forcecoff=1

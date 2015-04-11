@@ -29,11 +29,11 @@ signed int iCSB;
 #ZERO_RAM
 boolean newCount;
 
-signed int32 g_lPeso, count1, count2, CountTotal, g_lP0, g_lP1;
-float g_fPeso, g_fOld_Peso, g_fNew_Peso;
+signed int32 g_lPeso, count1, count2, CountTotal, g_lP0;
+float g_fPeso, g_fP1, g_fNew_Peso;
 float g_fTarget = 2.0, g_fFlow, g_fOver, g_fFreeFall, g_fPesoMin=0.01;
-int8 sem, zero_cnt, span_cnt;
-boolean g_bUpdHost, g_bGotWeightData, g_bKeying, g_bFillDone, g_bDumped, g_bStart, LC1_DATA_RDY, LC2_DATA_RDY;
+int8 zero_cnt, span_cnt;
+boolean g_bUpdHost, g_bKeying, g_bFillDone, g_bDumped, g_bStart, LC1_DATA_RDY, LC2_DATA_RDY;
 char g_sInputs[] = "     ", g_sOutputs[] = "   ", g_sStatus;
 
 // this character array will be used to take input from the prompt
@@ -301,13 +301,10 @@ void START_PROCESS()
 void CONVERT_WEIGHT()   // read Weight data
 {
 	static signed int32 old_cnt;
-	signed int32 lNew;
 	static signed int UpdHost;
 	int tmp;
 
 	if(newCount){
-		
-		g_lPeso = CountTotal - g_lP0 ;   // ajuste del CERO
 		
 		delta = CountTotal - old_cnt;
 		if(abs(iCSB) >= AMT1)
@@ -326,31 +323,31 @@ void CONVERT_WEIGHT()   // read Weight data
 		
 		old_cnt = old_cnt + (delta/(pow(SCALAR,2) + AMT5));
 		
-		g_lPeso = old_cnt;
-/*			g_fPeso;
-				
-			g_fPeso = floor(g_fP1 * g_lPeso/0.02)*0.02;   // peso calibrado
+		g_lPeso = old_cnt - g_lP0 ;   // ajuste del CERO;
 			
-			if(g_fPeso > g_fTarget)	// Update SetPoints
-			{
-				FILL_ON;
-				g_bFillDone = true;
-				g_sOutputs[0]=' ';
-				//DUMP();
-			}
-			else if(g_fPeso < g_fPesoMin)
-			{   
-				FILL_OFF;
-				g_bDumped = true;
-			}*/
-			
-			newCount = false;
-	
-			if(UpdHost++>1)
-			{
-				g_bUpdHost = true;
-				UpdHost = 0;
-			}	
+		g_fPeso = floor(g_fP1 * g_lPeso/0.05)*0.05;   // peso calibrado
+		
+/*		if(g_fPeso > g_fTarget)	// Update SetPoints
+		{
+			FILL_OFF;
+			g_bFillDone = true;
+			g_sOutputs[0]=' ';
+			DUMP_ON;
+		}
+		else if(g_fPeso < g_fPesoMin)
+		{   
+			DUMP_OFF;
+			FILL_ON;
+			g_bDumped = true;
+		}*/
+		
+		newCount = false;
+
+		if(UpdHost++>1)
+		{
+			g_bUpdHost = true;
+			UpdHost = 0;
+		}	
 	}
 }
 
@@ -390,111 +387,102 @@ void SET_ZERO(void)	// Puesta a cero
 {
 	g_lP0 = CountTotal;
 
-	WRITE_INT32_EEPROM(0x0000, g_lP0);
+	//WRITE_INT32_EEPROM(0x0000, g_lP0);
 }
 
 void SET_SPAN(void)	// Rango
 {
-	int16  j; 
-	int32 g_lPeso;
 
-	for(j=0;j<=100;j++){
+	g_lPeso = CountTotal - g_lP0;
 	
-		g_lPeso = CountTotal - g_lP0;
-		
-		g_fNew_Peso = g_fOld_Peso + ((float)g_lPeso - g_fOld_Peso);
-		g_fOld_Peso = g_fNew_Peso;
-
-	}
-	
-//	g_fP1 = 0.8/g_fNew_Peso;
+	g_fP1 = 36.54/g_lPeso;
 	
 }
 
 void TERMINAL (void)
 {
-	if(!input_ready) return;
+	if(!input_ready) return;	//Si no se ha recibido ningun comando retorna
 			
 	switch(MnuConfig)
 	{
-	case SetCalWeight:
+		case SetCalWeight:
 		g_fTarget = atof(usr_input);
 		//MENU(1);
 		break;
 		
-	case SetZero:
+		case SetZero:
 		switch (usr_input)
 		{
-		case "f":
-		//	MENU(2);
-			break;
+			case "f":
+			//	MENU(2);
+				break;
+				
+			case "s":
+			//	MENU(3);
+				break;
 			
-		case "s":
-		//	MENU(3);
-			break;
-		
-		case "r":
-		//	MENU(4);
-			break;
-		
-		case "t":
-		//	MENU(0);
-
-		default:
-			break;
+			case "r":
+			//	MENU(4);
+				break;
+			
+			case "t":
+			//	MENU(0);
+	
+			default:
+				break;
 		}
 
 		break;
 		
-	default:		
+		default:		
 
 		switch (usr_input){
-		case "c":
-			 set_span();
+			case "spn":
+				SET_SPAN();
 			break;
 		
-		case "z":
-		  set_zero();
+			case "zro":
+				SET_ZERO();
 			break;
 			
-		case "s":
-			START_PROCESS();
+			case "str":
+				START_PROCESS();
 			break;
 			
-		case "p":	// stop
-			cout<<"\x1B[2;5HStop req'd\x1B[K"<<endl;
-			DUMP_OFF;
-			FILL_OFF;
-			g_bStart = FALSE;
+			case "stp":	// stop
+				cout<<"\x1B[2;5HStop req'd\x1B[K"<<endl;
+				DUMP_OFF;
+				FILL_OFF;
+				g_bStart = FALSE;
 			break;
 			
-		case "o":	// open
-			cout<<"\x1B[2;5HOpening\x1B[K"<<endl;
-			DUMP_OFF;
-			delay_ms(50);
-			FILL_ON;
-			//set_ticks(0);
+			case "opn":	// open
+				cout<<"\x1B[2;5HOpening\x1B[K"<<endl;
+				DUMP_OFF;
+				delay_ms(50);
+				FILL_ON;
+				//set_ticks(0);
 			break;
 			
-		case "l":   // close
-			cout<<"\x1B[2;5HClosing\x1B[K"<<endl;
-			FILL_OFF;
-			DUMP_ON;
+			case "clo":   // close
+				cout<<"\x1B[2;5HClosing\x1B[K"<<endl;
+				FILL_OFF;
+				DUMP_ON;
 			break;
 			
-		case "d":
-			cout<<"\x1B[2;5HDumping\x1B[K"<<endl;
-			cal_on;
-			FILL_ON;
-			DUMP_ON;
-		break;
+			case "dmp":
+				cout<<"\x1B[2;5HDumping\x1B[K"<<endl;
+				cal_on;
+				FILL_ON;
+				DUMP_ON;
+			break;
 
-		case "a":
-			//MENU(1);
-		break;
+			case "a":
+				//MENU(1);
+			break;
 
-		default:
-		break;
+			default:
+			break;
 		}
 	
 		break;
@@ -505,37 +493,23 @@ void TERMINAL (void)
 	g_bKeying = false;
 }
 
-void Read_Inputs(void)
-{
-/*	g_sInputs[0]=(zero)?'z':' ';
-	g_sInputs[1]=(cal)?'c':' ';
-
-	if(START)
-	{
-		g_sInputs[2]='s';
-		Start_Process();   
-	}
-	else
-		g_sInputs[2]=' ';
-	
-	g_sInputs[3]=(slow)?'s':' ';
-	
-	if(DISCH)
-	{
-		g_sInputs[4] = 'd';
-		output_high(EV3);
-	}
-	else
-		g_sInputs[4] = ' ';*/
-}
-
 void UPDATE_HOST(void)
 {
 	if(g_bUpdHost)
 	{			
 		if(!g_bKeying)   // user is typing	
 
-			cout << CountTotal << ", " << count1 << ", " << count2 << ", " << g_lPeso << ", " << delta << ", " << CREDIT << ", " << iCSB << ", " << SCALAR << endl;			
+			//cout << CountTotal << ", " << count1 << ", " << count2 << ", " << g_fPeso << ", " << delta << ", " << CREDIT << ", " << iCSB << ", " << SCALAR << endl;			
+			cout 	<< CountTotal << ", "	//
+					<< g_lP0 << ", " 
+					<< g_fP1 << ", " 
+					<< g_lPeso << ", " 
+					<< g_fPeso << ", " 
+					<< CREDIT << ", " 
+					<< iCSB << ", " 
+					<< SCALAR 
+					<< endl;			
+					
 			g_bUpdHost = false;
 	}
 	
@@ -582,7 +556,6 @@ void MAIN()
 			{
 				READ_HX711();
 				CONVERT_WEIGHT();
-				Read_Inputs();
 				TERMINAL();
 				UPDATE_HOST();
 				CHECK_TIME_OUT();

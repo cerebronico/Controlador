@@ -1,17 +1,18 @@
 #include <30F3013.h>
+#device ICD=TRUE 
 
-#fuses WDT            // Watch Dog Timer
-#fuses WPSA512        // Watch Dog Timer PreScalar A 1:512
-#fuses WPSB16          // Watch Dog Timer PreScalar B 1:1
-#fuses NOBROWNOUT     // No brownout reset
-#fuses XT_PLL8       // XT Crystal Oscillator mode with 16X PLL
+#fuses WDT        	// Watch Dog Timer
+#fuses WPSA512    	// Watch Dog Timer PreScalar A 1:512
+#fuses WPSB16     	// Watch Dog Timer PreScalar B 1:1
+#fuses NOBROWNOUT 	// No brownout reset
+#fuses XT_PLL8      // XT Crystal Oscillator mode with 16X PLL
 
 #use delay(clock=80MHz, crystal=10MHz, restart_wdt)
 
 // Weighing Sensor Pins
 #define WS_DAT_2	input(PIN_D8)	// pin 15
 #define WS_DAT_1	input(PIN_D9)	// pin 14
-#define WS_CLK_2	PIN_F4         	// pin 22
+#define WS_CLK_2	PIN_F4        	// pin 22
 #define WS_CLK_1	PIN_F5			// pin 21                         
 
 //   inputs
