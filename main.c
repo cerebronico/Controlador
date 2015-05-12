@@ -7,6 +7,8 @@ Controlador para balanza de dos celdas de carga, no utiliza caja sumadora
 ya que esta se hace digitalmente leyendo dos convertidores HX711
 */
 
+#define debug		// comment this line in release version
+
 #include <main.h>
 #include <math.h>
 #include <ios.h> 
@@ -30,23 +32,22 @@ signed int iCSB;
 boolean newCount;
 
 signed int32 g_lPeso, count1, count2, CountTotal, g_lP0;
-float g_fPeso, g_fP1, g_fNew_Peso;
-float g_fTarget = 2.0, g_fFlow, g_fOver, g_fFreeFall, g_fPesoMin=0.01;
+float g_fPeso, g_fP1;
+float g_fTarget, g_fFlow, g_fOver, g_fFreeFall, g_fPesoMin;
+unsigned long _fill_dly, _dump_dly;
 int8 zero_cnt, span_cnt;
-boolean g_bUpdHost, g_bKeying, g_bFillDone, g_bDumped, g_bStart, LC1_DATA_RDY, LC2_DATA_RDY;
-char g_sInputs[] = "     ", g_sOutputs[] = "   ", g_sStatus;
+boolean g_bUpdHost, g_bKeying, g_bFillDone,  g_bStart, LC1_DATA_RDY, LC2_DATA_RDY;
+char g_cInputs, g_cOutputs, g_cStatus;
 
-// this character array will be used to take input from the prompt
-char usr_input[30];
 
-// this will hold the current position in the array
-int index;
+char usr_input[30];		// this character array will be used to take input from the prompt
+int index;				// this will hold the current position in the array
+boolean input_ready;	// this will signal to the kernel that input is ready to be processed
 
-// this will signal to the kernel that input is ready to be processed
-boolean input_ready;
 
-// different commands
-enum _Menu { GetWeightCounts, SetZero, SetSpan, SetCalWeight } MnuConfig;
+// enumerate different commands
+enum _Menu {GetWeightCounts, SetZero, SetSpan, SetCalWeight } MnuConfig;
+enum _State {llenando, vaciando, calibrando, esperando, encerando, reposando} staEstado;
 
 typedef union 
 {
@@ -58,10 +59,23 @@ typedef union
 	} parts;
 } float2eeprom;
 
-//============================================
-//  procedure define
-//============================================
-void INIT_HARDWARE(void);
+#bit DGLS = g_cInputs.0
+#bit FGLS = g_cInputs.1
+#bit OVRF = g_cInputs.2
+#bit FULF = g_cInputs.3
+#bit PRSF = g_cInputs.4
+#bit XTRA = g_cInputs.5
+
+#bit Filling = g_cOutputs.0
+#bit Dumping = g_cOutputs.1
+#bit Calibrating = g_cOutputs.2
+#bit Alarming = g_cOutputs.3
+
+#bit Motion = g_cStatus.0
+#bit Over = g_cStatus.1
+#bit Under = g_cStatus.2
+
+
 
 //============================================
 //  interrupt service
@@ -97,14 +111,12 @@ void MATH_ERR(void)   //Fallo matemático
 #INT_RDA 
 void USER_INPUT ( )		// serial port interrupt
 {
-	g_bKeying = true;
+	//g_bKeying = true;
 	if(index<29){
 		usr_input [ index ] = getc ( );	// get the value in the serial recieve reg
-		putc (usr_input [ index ]);		// display it on the screen
 
 		if(usr_input[index]==0x0d){		// if the input was enter
 			
-			putc('\n');
 			usr_input [ index ] = '\0';	// add the null character
 			input_ready=TRUE;			// set the input read variable to true
 			index=0;					// and reset the index
@@ -112,8 +124,6 @@ void USER_INPUT ( )		// serial port interrupt
 
 		else if (usr_input[index]==0x08){
 			if ( index > 1 ){
-				putc(' ');
-				putc(0x08);
 				index-=2;
 			}
 		}
@@ -121,8 +131,6 @@ void USER_INPUT ( )		// serial port interrupt
 	}
 	
 	else{
-		putc ('\n');
-		putc ('\r');
 		usr_input [ index ] = '\0';
 		index = 0;
 		input_ready = TRUE;
@@ -130,7 +138,7 @@ void USER_INPUT ( )		// serial port interrupt
 }
 
 #INT_EXT1
-void WS_DAT_1_isr(void)   // lectura de convertidor 2, toma 56 us
+void WS_DAT_1_isr(void)   // lectura de convertidor 2
 {
 	int32 count=0;
 	char i;  
@@ -156,7 +164,7 @@ void WS_DAT_1_isr(void)   // lectura de convertidor 2, toma 56 us
 }
 
 #INT_EXT2	
-void WS_DAT_2_isr(void)   // lectura de convertidor 2, toma 56 us
+void WS_DAT_2_isr(void)   // lectura de convertidor 2
 { 
 	int32 count=0;
 	 char i; 
@@ -181,8 +189,6 @@ void WS_DAT_2_isr(void)   // lectura de convertidor 2, toma 56 us
 
 	LC1_DATA_RDY = true;
 }
-
-
 
 Int32 Ticker, second;
 //#int_TIMER1
@@ -250,10 +256,9 @@ void INIT_HARDWARE(void)	//  initialize system hardware config
 
 //============================================
 //  
-//  RTOS Tasks
+//  Function prototypes
 //
 //============================================
-void Task_Disabler();
 
 void READ_HX711();
 
@@ -271,14 +276,11 @@ void UPDATE_HOST(void);
 
 void PROCESS(void);
 
-void FILL(void);	// llenar
+void FILL();	// llenar
 
-void DUMP (void);	// descargar
+void DUMP ();	// descargar
 
-void _BEAT(void){
-	BEAT;
-	restart_wdt();
-}
+VOID CALIB();	// calibrar
 
 void READ_HX711()
 {
@@ -292,10 +294,11 @@ void READ_HX711()
 
 void START_PROCESS()
 {
-	cout<<"Process started20/03/2015 13:01:54"<<endl;
+//	cout<<"\x1B[3;1Process started\x1B[K"<<endl;
 	g_bStart = TRUE;
 	g_bFillDone = true;
-	DUMP();
+	staEstado = vaciando;
+ 	
 }
 
 void CONVERT_WEIGHT()   // read Weight data
@@ -343,7 +346,7 @@ void CONVERT_WEIGHT()   // read Weight data
 		
 		newCount = false;
 
-		if(UpdHost++>1)
+		if(UpdHost++>10)	// frecuencia de actualizacion de la pantalla
 		{
 			g_bUpdHost = true;
 			UpdHost = 0;
@@ -351,13 +354,51 @@ void CONVERT_WEIGHT()   // read Weight data
 	}
 }
 
-void FILL(void)   //   ciclo de llenado
+void FILL()   //   ciclo de llenado
 {
-	g_sOutputs[0]='F';
-	DUMP_OFF;
-	FILL_ON;
-	set_ticks(0);
+	if(staEstado == llenando){
+	//	g_sOutputs[0]='F';
+		if(g_fPeso < g_fTarget)
 
+			FILL_ON;
+		else
+			FILL_OFF;
+			if(g_bStart == true){
+				//delay_ms(_dump_dly);
+				staEstado = vaciando;
+			}
+			else 
+				{
+					staEstado = reposando;
+				}
+	}
+		 	
+		//set_ticks(0);
+	
+}
+
+void DUMP ()   //   ciclo de descarga
+{
+	if(staEstado == vaciando){
+		if(g_fPeso > g_fPesoMin)
+			DUMP_ON;
+		else{
+			DUMP_OFF;
+			if(g_bStart == true){
+				//delay_ms(_fill_dly);
+				staEstado = llenando;
+			}
+		}
+	}
+}
+
+void CALIB()
+{
+	if(staEstado == calibrando)
+		;//		cout << "\x1B[3;0H calib" << endl;	 	
+	else
+		;//		cout << "\x1B[3;0H      " << endl;
+	 	
 }
 
 void CHECK_TIME_OUT(void)
@@ -374,15 +415,6 @@ void CHECK_TIME_OUT(void)
 			
 }
 
-void DUMP (void)   //   ciclo de descarga
-{
-	if(g_bFillDone){
-		DUMP_ON;
-		g_bFillDone = false;
-		FILL();
-	}
-}
-
 void SET_ZERO(void)	// Puesta a cero
 {
 	g_lP0 = CountTotal;
@@ -394,8 +426,7 @@ void SET_SPAN(void)	// Rango
 {
 
 	g_lPeso = CountTotal - g_lP0;
-	
-	g_fP1 = 36.54/g_lPeso;
+	g_fP1 = 17.03/g_lPeso;
 	
 }
 
@@ -450,28 +481,31 @@ void TERMINAL (void)
 			break;
 			
 			case "stp":	// stop
-				cout<<"\x1B[2;5HStop req'd\x1B[K"<<endl;
+				//cout << "\x1B[3;1HStop req'd\x1B[K" << endl;
 				DUMP_OFF;
 				FILL_OFF;
 				g_bStart = FALSE;
 			break;
 			
 			case "opn":	// open
-				cout<<"\x1B[2;5HOpening\x1B[K"<<endl;
-				DUMP_OFF;
-				delay_ms(50);
-				FILL_ON;
-				//set_ticks(0);
-			break;
+				if(!g_bStart){
+					
+					DUMP_OFF;
+					delay_ms(_fill_dly);	//TODO: debe ser parametizable
+					FILL_ON;
+				}	//set_ticks(0);
+				break;
 			
 			case "clo":   // close
-				cout<<"\x1B[2;5HClosing\x1B[K"<<endl;
-				FILL_OFF;
-				DUMP_ON;
+				if(!g_bStart){
+					FILL_OFF;
+					delay_ms(_dump_dly);
+					DUMP_ON;
+				}
 			break;
 			
 			case "dmp":
-				cout<<"\x1B[2;5HDumping\x1B[K"<<endl;
+				//cout<<"\x1B[3;0HDumping\x1B[K"<<endl;
 				cal_on;
 				FILL_ON;
 				DUMP_ON;
@@ -497,22 +531,55 @@ void UPDATE_HOST(void)
 {
 	if(g_bUpdHost)
 	{			
-		if(!g_bKeying)   // user is typing	
-
-			//cout << CountTotal << ", " << count1 << ", " << count2 << ", " << g_fPeso << ", " << delta << ", " << CREDIT << ", " << iCSB << ", " << SCALAR << endl;			
-			cout 	<< CountTotal << ", "	//
-					<< g_lP0 << ", " 
-					<< g_fP1 << ", " 
-					<< g_lPeso << ", " 
-					<< g_fPeso << ", " 
-					<< CREDIT << ", " 
-					<< iCSB << ", " 
-					<< SCALAR 
-					<< endl;			
+//		if(!g_bKeying)   // user is typing	
+			#ifdef debug
+			cout << CountTotal << ", "
+				<< g_lP0 << ", " 
+				<< g_fP1 << ", " 
+				<< g_lPeso << ", " 
+				<< g_fPeso << ", " 
+				<< CREDIT << ", " 
+				<< setw(5) << iCSB << ", " 
+				<< setw(5) << SCALAR << ", " << endl;
+//				<< g_cStatus << g_cInputs << g_cOutputs
+	//			<< endl;
+			#else			
+			cout << CountTotal << ", "
+				<< g_lPeso <<", " 
+				<< g_fPeso
+				<< endl;
+			#endif
 					
 			g_bUpdHost = false;
 	}
 	
+}
+
+// buffer must have length >= sizeof(int) + 1
+// Write to the buffer backwards so that the binary representation
+// is in the correct order i.e.  the LSB is on the far right
+// instead of the far left of the printed string
+char *int2bin(int a, char *buffer, int buf_size) {
+    buffer += (buf_size - 1);
+
+    for (int i = 31; i >= 0; i--) {
+        *buffer-- = (a & 1) + '0';
+
+        a >>= 1;
+    }
+
+    return buffer;
+}
+
+#define BUF_SIZE 9
+
+int main() {
+    char buffer[BUF_SIZE];
+    buffer[BUF_SIZE - 1] = '\0';
+
+    int2bin(0xFF000000, buffer, BUF_SIZE - 1);
+
+    printf("a = %s", buffer);
 }
 
 //=================================
@@ -537,7 +604,12 @@ void MAIN()
 	
 	// initialize input variables
 	index=0;
-	input_ready=FALSE;
+	input_ready=false;
+	
+	// process variables
+	_fill_dly = 2000;
+	_dump_dly = 2000;
+	staEstado = reposando;
 	
 	// smart filter params
 	AMT1 = 50;
@@ -545,6 +617,9 @@ void MAIN()
 	AMT3 = 2;
 	AMT4 = 8;
 	AMT5 = 1;
+	
+	g_fTarget = 15.0;
+	g_fPesoMin = 2.0;
 	
 	switch (restart_cause()){
 		case RESTART_MCLR:
@@ -554,12 +629,16 @@ void MAIN()
 		{
 			while(true)
 			{
+				restart_wdt();	
 				READ_HX711();
 				CONVERT_WEIGHT();
+				FILL();
+				DUMP();
+				CALIB();
 				TERMINAL();
 				UPDATE_HOST();
 				CHECK_TIME_OUT();
-				_BEAT();	// keep alive
+				BEAT;	// keep alive
 			}
 			break;
 		}
