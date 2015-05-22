@@ -15,35 +15,38 @@ ya que esta se hace digitalmente leyendo dos convertidores HX711
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <input.c>
+#include <internal_eeprom.c>
+#include "limits.h"
+
+#ZERO_RAM
 
 //============================================
 //  Weighing parameter define
 //============================================  
 
-int AMT1, AMT2, AMT3, AMT4, AMT5;		// smmart filter parameters
-signed int32 delta, CREDIT, SCALAR;
+int16 g_iAMT[5];		// smmart filter parameters must be stored and recalled from EEPROM
+signed int32 DELTA, CREDIT, SCALAR;
 signed int iCSB;
+
+signed int32 g_lP0;	// unloaded scale count value
+float g_fP1;		// conversion factor, zero tracking division and motion divisions
+int16 g_iZtDly, g_iMtDly, g_iZtDiv, g_iMotn, g_iFillDly, g_iDumpDly;	// zero tracking and motion delay in msec
+float g_fAcumulado, g_fPesoMin, g_fTarget, g_fFlow, g_fOver, g_fFreeFall;
 
 //============================================
 //  global variable define
 //============================================
 
-#ZERO_RAM
 boolean newCount;
 
-signed int32 g_lPeso, count1, count2, CountTotal, g_lP0;
-float g_fPeso, g_fP1;
-float g_fTarget, g_fFlow, g_fOver, g_fFreeFall, g_fPesoMin;
-unsigned long _fill_dly, _dump_dly;
-int8 zero_cnt, span_cnt;
+signed int32 g_lPeso, g_lCount1, g_lCount2, g_lCountTotal;
+float g_fPeso, g_fTestWeight;
 boolean g_bUpdHost, g_bKeying, g_bFillDone,  g_bStart, LC1_DATA_RDY, LC2_DATA_RDY;
-char g_cInputs, g_cOutputs, g_cStatus;
-
 
 char usr_input[30];		// this character array will be used to take input from the prompt
 int index;				// this will hold the current position in the array
 boolean input_ready;	// this will signal to the kernel that input is ready to be processed
-
 
 // enumerate different commands
 enum _Menu {GetWeightCounts, SetZero, SetSpan, SetCalWeight } MnuConfig;
@@ -52,19 +55,21 @@ enum _State {llenando, vaciando, calibrando, esperando, encerando, reposando} st
 typedef union 
 {
 	float f;
-	struct
-	{
+	struct{
 		unsigned int16 mantisa;
 		unsigned int16 exponent;
 	} parts;
 } float2eeprom;
 
-#bit DGLS = g_cInputs.0
-#bit FGLS = g_cInputs.1
-#bit OVRF = g_cInputs.2
-#bit FULF = g_cInputs.3
-#bit PRSF = g_cInputs.4
-#bit XTRA = g_cInputs.5
+// flag definitions
+char g_cInputs, g_cOutputs, g_cStatus;
+
+#bit DGLS = g_cInputs.0		// dump gate limit switch
+#bit FGLS = g_cInputs.1		// fill gate limit switch
+#bit OVRF = g_cInputs.2		// overrun flag
+#bit FULF = g_cInputs.3		// overdump flag
+#bit PRSF = g_cInputs.4		// airpressure flag
+#bit XTRA = g_cInputs.5		// extra flag
 
 #bit Filling = g_cOutputs.0
 #bit Dumping = g_cOutputs.1
@@ -74,7 +79,6 @@ typedef union
 #bit Motion = g_cStatus.0
 #bit Over = g_cStatus.1
 #bit Under = g_cStatus.2
-
 
 
 //============================================
@@ -111,10 +115,10 @@ void MATH_ERR(void)   //Fallo matemático
 #INT_RDA 
 void USER_INPUT ( )		// serial port interrupt
 {
-	//g_bKeying = true;
 	if(index<29){
-		usr_input [ index ] = getc ( );	// get the value in the serial recieve reg
-
+		usr_input [index] = getc();	// get the value in the serial recieve reg
+		putc(usr_input[index]);
+		
 		if(usr_input[index]==0x0d){		// if the input was enter
 			
 			usr_input [ index ] = '\0';	// add the null character
@@ -155,9 +159,9 @@ void WS_DAT_1_isr(void)   // lectura de convertidor 2
 	
 	output_high(WS_CLK_2); 
 
-	count2 = count;
+	g_lCount2 = count;
 	if(bit_test(count,23))
-		count2|=0xFF800000;			
+		g_lCount2|=0xFF800000;			
 	output_low(WS_CLK_2);   // start new conversion
 
 	LC2_DATA_RDY = true;
@@ -182,9 +186,9 @@ void WS_DAT_2_isr(void)   // lectura de convertidor 2
 	
 	output_high(WS_CLK_1); 
 
-	count1 = count;
+	g_lCount1 = count;
 	if(bit_test(count,23))
-		count1|=0xFF800000;
+		g_lCount1|=0xFF800000;
 	output_low(WS_CLK_1);   // start new conversion	
 
 	LC1_DATA_RDY = true;
@@ -208,30 +212,6 @@ Int32 Ticker, second;
 //
 //============================================
 
-void WRITE_FLOAT_EEPROM(int16 n, float data) 
-{
-	write_eeprom(n, data, sizeof(float));
-}
-
-float READ_FLOAT_EEPROM(int16 n)
-{
-	float data;
-	(int32)data = read_eeprom(n, sizeof(float));
-	return(data);
-}
-
-void WRITE_INT32_EEPROM(int16 n, int32 data) 
-{
-	write_eeprom(n, data, sizeof(int32));
-}
-
-float READ_INT32_EEPROM(int16 n)
-{
-	int32 data;
-	data = read_eeprom(n, sizeof(int32));
-	return(data);
-}
-
 void INIT_HARDWARE(void)	//  initialize system hardware config
 {   
 	setup_adc_ports(NO_ANALOGS);
@@ -249,9 +229,29 @@ void INIT_HARDWARE(void)	//  initialize system hardware config
 	output_low(WS_CLK_1);	// HX711 normal operation
 	output_low(WS_CLK_2);	//
 	
-//	g_lP0 = READ_INT32_EEPROM(0x0000);
-//	g_fP1 = READ_FLOAT_EEPROM(0x0020);
+	// smart filter params
 
+	read_eeprom(0, g_iAMT[1]);	// g_iAMT[1] = 50;  
+	read_eeprom(2, g_iAMT[2]);	// g_iAMT[2] = 20;  
+	read_eeprom(4, g_iAMT[3]);	// g_iAMT[3] = 2;   
+	read_eeprom(6, g_iAMT[4]);	// g_iAMT[4] = 8;   
+	read_eeprom(8, g_iAMT[5]);	// g_iAMT[5] = 1; 
+	
+	// operational params
+	
+	read_eeprom(10, g_iZtDly);
+	read_eeprom(12, g_iMtDly);
+	read_eeprom(14, g_iZtDiv);
+	read_eeprom(16, g_iMotn);
+	read_eeprom(18, g_iFillDly);
+	read_eeprom(20, g_iDumpDly);
+	
+	// scale params	                       	
+	g_lP0 = read_int32_eeprom(40);	// ZERO
+	g_fP1 = read_float_eeprom(60);	// GAIN
+	g_fTarget = read_float_eeprom(64);	//TARGET WEIGHT
+	g_fPesoMin = read_float_eeprom(68);	// MIN WEIGHT TO CONSIDER FOR ZERO
+	g_fTestWeight = read_float_eeprom(72);	// CAL TEST WEIGHT
 }
 
 //============================================
@@ -266,13 +266,13 @@ void SET_ZERO(void);
 
 void SET_SPAN(void);
 
-void TERMINAL (void);
+void HOST_COMMANDS (void);
 
 void _BEAT(void);
 
 void CONVERT_WEIGHT(int32 cnt);
 
-void UPDATE_HOST(void);
+void UPDATE_HOST(int Tx);
 
 void PROCESS(void);
 
@@ -285,7 +285,7 @@ VOID CALIB();	// calibrar
 void READ_HX711()
 {
 	if(LC1_DATA_RDY & LC2_DATA_RDY){		
-		CountTotal = count1 + count2;
+		g_lCountTotal = g_lCount1 + g_lCount2;
 
 		LC1_DATA_RDY = LC2_DATA_RDY = false;
 		newCount = true;
@@ -304,27 +304,26 @@ void START_PROCESS()
 void CONVERT_WEIGHT()   // read Weight data
 {
 	static signed int32 old_cnt;
-	static signed int UpdHost;
 	int tmp;
 
 	if(newCount){
 		
-		delta = CountTotal - old_cnt;
-		if(abs(iCSB) >= AMT1)
-			CREDIT = delta / AMT2;
+		delta = g_lCountTotal - old_cnt;
+		if(abs(iCSB) >= g_iAMT[1])
+			CREDIT = delta / g_iAMT[2];
 		else 
 			CREDIT = 0;
 			
-		if(((delta >= 0) && (iCSB < 0)) || ((delta <= 0) && (iCSB > 0)) || (abs(delta) < AMT3))
+		if(((delta >= 0) && (iCSB < 0)) || ((delta <= 0) && (iCSB > 0)) || (abs(delta) < g_iAMT[3]))
 			iCSB = 0;   
 		else
 			iCSB = CREDIT + iCSB + ((delta > 0) ? 1 : ((delta < 0) ? -1 : 0));
 		
-		tmp = (AMT4-abs(iCSB));
+		tmp = (g_iAMT[4]-abs(iCSB));
 		
 		SCALAR = (tmp>0)?tmp:0;
 		
-		old_cnt = old_cnt + (delta/(pow(SCALAR,2) + AMT5));
+		old_cnt = old_cnt + (delta/(pow(SCALAR,2) + g_iAMT[5]));
 		
 		g_lPeso = old_cnt - g_lP0 ;   // ajuste del CERO;
 			
@@ -346,11 +345,6 @@ void CONVERT_WEIGHT()   // read Weight data
 		
 		newCount = false;
 
-		if(UpdHost++>10)	// frecuencia de actualizacion de la pantalla
-		{
-			g_bUpdHost = true;
-			UpdHost = 0;
-		}	
 	}
 }
 
@@ -364,7 +358,7 @@ void FILL()   //   ciclo de llenado
 		else
 			FILL_OFF;
 			if(g_bStart == true){
-				//delay_ms(_dump_dly);
+				//delay_ms(g_iDumpDly);
 				staEstado = vaciando;
 			}
 			else 
@@ -385,7 +379,7 @@ void DUMP ()   //   ciclo de descarga
 		else{
 			DUMP_OFF;
 			if(g_bStart == true){
-				//delay_ms(_fill_dly);
+				//delay_ms(g_iFillDly);
 				staEstado = llenando;
 			}
 		}
@@ -417,169 +411,181 @@ void CHECK_TIME_OUT(void)
 
 void SET_ZERO(void)	// Puesta a cero
 {
-	g_lP0 = CountTotal;
-
-	//WRITE_INT32_EEPROM(0x0000, g_lP0);
+	g_lP0 = g_lCountTotal;
+	write_int32_eeprom(40, g_lP0);
+	printf("P0=%lu\n\r",g_lP0);
 }
 
 void SET_SPAN(void)	// Rango
 {
-
-	g_lPeso = CountTotal - g_lP0;
-	g_fP1 = 17.03/g_lPeso;
-	
+	g_lPeso = g_lCountTotal - g_lP0;
+	g_fP1 = g_fTestWeight/g_lPeso;
+	write_float_eeprom(60, g_fP1);
+	printf("P1=%e\n\r",g_fP1);
 }
 
-void TERMINAL (void)
+void HOST_COMMANDS(void)
 {
+	char commands[3][10];
+	char tok[] = ",";
+
+
 	if(!input_ready) return;	//Si no se ha recibido ningun comando retorna
-			
-	switch(MnuConfig)
-	{
-		case SetCalWeight:
-		g_fTarget = atof(usr_input);
-		//MENU(1);
-		break;
-		
-		case SetZero:
-		switch (usr_input)
-		{
-			case "f":
-			//	MENU(2);
-				break;
-				
-			case "s":
-			//	MENU(3);
-				break;
-			
-			case "r":
-			//	MENU(4);
-				break;
-			
-			case "t":
-			//	MENU(0);
+	cout << usr_input << endl;  
 	
-			default:
-				break;
-		}
-
-		break;
-		
-		default:		
-
-		switch (usr_input){
-			case "spn":
-				SET_SPAN();
-			break;
-		
-			case "zro":
-				SET_ZERO();
-			break;
-			
-			case "str":
-				START_PROCESS();
-			break;
-			
-			case "stp":	// stop
-				//cout << "\x1B[3;1HStop req'd\x1B[K" << endl;
-				DUMP_OFF;
-				FILL_OFF;
-				g_bStart = FALSE;
-			break;
-			
-			case "opn":	// open
-				if(!g_bStart){
-					
-					DUMP_OFF;
-					delay_ms(_fill_dly);	//TODO: debe ser parametizable
-					FILL_ON;
-				}	//set_ticks(0);
-				break;
-			
-			case "clo":   // close
-				if(!g_bStart){
-					FILL_OFF;
-					delay_ms(_dump_dly);
-					DUMP_ON;
-				}
-			break;
-			
-			case "dmp":
-				//cout<<"\x1B[3;0HDumping\x1B[K"<<endl;
-				cal_on;
-				FILL_ON;
-				DUMP_ON;
-			break;
-
-			case "a":
-				//MENU(1);
-			break;
-
-			default:
-			break;
-		}
+	char *ptr;	
+	ptr = strtok(usr_input, tok);
 	
-		break;
+	int i=0;	
+	while(ptr!=0){
+		strcpy(commands[i],ptr);
+		i++;
+		ptr = strtok(0, tok);
 	}
+		
+	switch (commands[0]){
+		case "S":
+			SET_SPAN();
+			break;
+	
+		case "Z":
+			SET_ZERO();
+			break;
+		
+		case "R":
+			START_PROCESS();
+			break;
+		
+		case "P":	// stop
+			//cout << "\x1B[3;1HStop req'd\x1B[K" << endl;
+			DUMP_OFF;
+			FILL_OFF;
+			g_bStart = FALSE;
+			break;
+				
+		case "PO":
+			g_fTarget = atof(commands[1]);
+			write_float_eeprom(64,g_fTarget);
+			printf("PO, %f \r\n",g_fTarget);
+			break;
+			
+		case "O":	// open
+			if(!g_bStart){
+				
+				DUMP_OFF;
+				delay_ms(g_iFillDly);	//TODO: debe ser parametizable
+				FILL_ON;
+			}	//set_ticks(0);
+			break;
+		
+		case "C":   // close
+			if(!g_bStart){
+				FILL_OFF;
+				delay_ms(g_iDumpDly);
+				DUMP_ON;
+			}
+			break;
+		
+		case "D":
+			//cout<<"\x1B[3;0HDumping\x1B[K"<<endl;
+			cal_on;
+			FILL_ON;
+			DUMP_ON;
+			break;
+
+		case "Q":	// request data
+			UPDATE_HOST(1);
+			break;
+
+		case "QX":	// request extended diagnostics data
+			UPDATE_HOST(0);
+			break;
+
+		case "PM":	// minimum weight
+			g_fPesoMin = atof(commands[1]);
+			write_float_eeprom(68,g_fPesoMin);
+			printf("PM, %f \r\n",g_fPesoMin);
+			break;
+			
+		case "ZT":	// zero tracking delay
+			g_iZtDly = atoi(commands[1]);
+			write_eeprom(10, g_iZtDly);
+			printf("ZT, %u \r\n", g_iZtDly);
+			break;
+
+		case "ZD":	// zero divisions
+			g_iZtDiv = atoi(commands[1]);
+			write_eeprom(14, g_iZtDiv);
+			printf("ZD, %u \r\n", g_iZtDiv);
+			break;
+		
+		case "MT":	// motion divisions
+			g_iMotn = atoi(commands[1]);
+			write_eeprom(16, g_iMotn);
+			printf("MT, %u \r\n", g_iMotn);
+			break;
+		
+		case "MD":	// motion delay
+			g_iMtDly = atoi(commands[1]);
+			write_eeprom(12, g_iMtDly);
+			printf("MD, %u \r\n", g_iMtDly);			
+			break;
+			
+		case "A":
+			i = atoi(commands[1]);
+			g_iAMT[i] = atoi(commands[2]);
+			write_eeprom((i-1)*2, g_iAMT[i]);
+			delay_ms(4);
+			int variable;
+			read_eeprom(i,variable);
+			cout << "Parametro " << i-1 << ", " << g_iAMT[i] << ": " << variable<< endl;
+			break;
+			
+		case "TW":
+			g_fTestWeight = atof(commands[1]);
+			write_float_eeprom(72,g_fTestWeight);
+			printf("TW,%f\n\r",g_fTestWeight);
+			break;
+			
+		case "FD":
+			g_iFillDly = atoi(commands[1]);
+			write_eeprom(18,g_iFillDly);
+			printf("FD,%u\n\r",g_iFillDly);
+			break;
+		
+		case "DD":
+			g_iDumpDly = atoi(commands[1]);
+			write_eeprom(20,g_iDumpDly);
+			printf("DD,%lu\n\r",g_iDumpDly);
+			break;
+			
+		default:
+			cout << "Comando nulo" << endl;
+		break;
+		}
 	
 	input_ready=FALSE;
 	index=0;
 	g_bKeying = false;
 }
 
-void UPDATE_HOST(void)
+void UPDATE_HOST(int Tx)
 {
-	if(g_bUpdHost)
-	{			
-//		if(!g_bKeying)   // user is typing	
-			#ifdef debug
-			cout << CountTotal << ", "
-				<< g_lP0 << ", " 
-				<< g_fP1 << ", " 
-				<< g_lPeso << ", " 
-				<< g_fPeso << ", " 
-				<< CREDIT << ", " 
-				<< setw(5) << iCSB << ", " 
-				<< setw(5) << SCALAR << ", " << endl;
-//				<< g_cStatus << g_cInputs << g_cOutputs
-	//			<< endl;
-			#else			
-			cout << CountTotal << ", "
-				<< g_lPeso <<", " 
-				<< g_fPeso
-				<< endl;
-			#endif
-					
-			g_bUpdHost = false;
+	switch (Tx){
+		case 0:
+			printf("x,%lu, %lu, %e, %lu, %12.2f, %u, %u, %u \n\r",g_lCountTotal,g_lP0,g_fP1,g_lPeso,g_fPeso,CREDIT,iCSB,SCALAR);
+		//		<< g_cStatus << g_cInputs << g_cOutputs
+		//		<< endl;
+			break;
+		case 1:
+			printf(":,%lu, %12lu, %12.2f\n\r", g_lCountTotal , g_lPeso , g_fPeso);								 
+			break;
+		default:
+			cout << g_fPeso << ", "	<< g_fAcumulado << endl;
+			break;			
+				
 	}
 	
-}
-
-// buffer must have length >= sizeof(int) + 1
-// Write to the buffer backwards so that the binary representation
-// is in the correct order i.e.  the LSB is on the far right
-// instead of the far left of the printed string
-char *int2bin(int a, char *buffer, int buf_size) {
-    buffer += (buf_size - 1);
-
-    for (int i = 31; i >= 0; i--) {
-        *buffer-- = (a & 1) + '0';
-
-        a >>= 1;
-    }
-
-    return buffer;
-}
-
-#define BUF_SIZE 9
-
-int main() {
-    char buffer[BUF_SIZE];
-    buffer[BUF_SIZE - 1] = '\0';
-
-    int2bin(0xFF000000, buffer, BUF_SIZE - 1);
-
-    printf("a = %s", buffer);
 }
 
 //=================================
@@ -607,19 +613,12 @@ void MAIN()
 	input_ready=false;
 	
 	// process variables
-	_fill_dly = 2000;
-	_dump_dly = 2000;
+
 	staEstado = reposando;
 	
-	// smart filter params
-	AMT1 = 50;
-	AMT2 = 20;
-	AMT3 = 2;
-	AMT4 = 8;
-	AMT5 = 1;
-	
-	g_fTarget = 15.0;
-	g_fPesoMin = 2.0;
+	cout << g_iAMT[1] << ", " << g_iAMT[2] << ", " << g_iAMT[3] << ", " << g_iAMT[4] << ", " << g_iAMT[5] << endl;
+	printf("P0 = %lu, P1 = %e, PO = %f, Pmin = %f, Pp = %f\n\r", g_lP0, g_fP1, g_fTarget, g_fPesoMin, g_fTestWeight);
+	printf("zt %u, zd %u, md %u, mt %u, fd %u, dd %u\n\r", g_iZtDly, g_iZtDiv, g_iMtDly, g_iMotn, g_iFillDly, g_iDumpDly);
 	
 	switch (restart_cause()){
 		case RESTART_MCLR:
@@ -635,8 +634,7 @@ void MAIN()
 				FILL();
 				DUMP();
 				CALIB();
-				TERMINAL();
-				UPDATE_HOST();
+				HOST_COMMANDS();
 				CHECK_TIME_OUT();
 				BEAT;	// keep alive
 			}
