@@ -26,9 +26,8 @@ ya que esta se hace digitalmente leyendo dos convertidores HX711
 //============================================  
 
 int16 g_iAMT[5];		// smmart filter parameters must be stored and recalled from EEPROM
-signed int32 DELTA, CREDIT, SCALAR;
-signed int iCSB;
-
+char sParms[32];		// variable to hold intermediate SMART FILTER values
+ 
 signed int32 g_lP0;	// unloaded scale count value
 float g_fP1;		// conversion factor, zero tracking division and motion divisions
 int16 g_iZtDly, g_iMtDly, g_iZtDiv, g_iMotn, g_iFillDly, g_iDumpDly;	// zero tracking and motion delay in msec
@@ -42,7 +41,7 @@ boolean newCount;
 
 signed int32 g_lPeso, g_lCount1, g_lCount2, g_lCountTotal;
 float g_fPeso, g_fTestWeight;
-boolean g_bUpdHost, g_bKeying, g_bFillDone,  g_bStart, LC1_DATA_RDY, LC2_DATA_RDY;
+boolean g_bDiags, g_bUpdHost, g_bKeying, g_bFillDone,  g_bStart, LC1_DATA_RDY, LC2_DATA_RDY;
 
 char usr_input[30];		// this character array will be used to take input from the prompt
 int index;				// this will hold the current position in the array
@@ -62,7 +61,7 @@ typedef union
 } float2eeprom;
 
 // flag definitions
-char g_cInputs, g_cOutputs, g_cStatus;
+char g_cInputs, g_cOutputs, g_cStatus, g_cTx;
 
 #bit DGLS = g_cInputs.0		// dump gate limit switch
 #bit FGLS = g_cInputs.1		// fill gate limit switch
@@ -294,7 +293,7 @@ void READ_HX711()
 
 void START_PROCESS()
 {
-//	cout<<"\x1B[3;1Process started\x1B[K"<<endl;
+	printf("Process started\n");
 	g_bStart = TRUE;
 	g_bFillDone = true;
 	staEstado = vaciando;
@@ -303,31 +302,40 @@ void START_PROCESS()
 
 void CONVERT_WEIGHT()   // read Weight data
 {
-	static signed int32 old_cnt;
-	int tmp;
+	static signed int32 old_cnt, DELTA, CREDIT, SCALAR;
+	static signed int iCSB;
+	signed int tmp;
 
 	if(newCount){
 		
-		delta = g_lCountTotal - old_cnt;
+		DELTA = g_lCountTotal - old_cnt;
+
 		if(abs(iCSB) >= g_iAMT[1])
-			CREDIT = delta / g_iAMT[2];
+			CREDIT = DELTA / g_iAMT[2];
 		else 
 			CREDIT = 0;
 			
-		if(((delta >= 0) && (iCSB < 0)) || ((delta <= 0) && (iCSB > 0)) || (abs(delta) < g_iAMT[3]))
+		if(((DELTA >= 0) && (iCSB < 0)) || ((DELTA <= 0) && (iCSB > 0)) || (abs(DELTA) < g_iAMT[3]))
 			iCSB = 0;   
 		else
-			iCSB = CREDIT + iCSB + ((delta > 0) ? 1 : ((delta < 0) ? -1 : 0));
+			iCSB = CREDIT + iCSB + ((DELTA > 0) ? 1 : ((DELTA < 0) ? -1 : 0));
 		
 		tmp = (g_iAMT[4]-abs(iCSB));
-		
 		SCALAR = (tmp>0)?tmp:0;
 		
-		old_cnt = old_cnt + (delta/(pow(SCALAR,2) + g_iAMT[5]));
-		
+		old_cnt = old_cnt + (DELTA/(pow(SCALAR,2) + g_iAMT[5]));
 		g_lPeso = old_cnt - g_lP0 ;   // ajuste del CERO;
-			
 		g_fPeso = floor(g_fP1 * g_lPeso/0.05)*0.05;   // peso calibrado
+
+		if(g_bDiags) printf("%10ld, %10ld, %10ld, %10d\r", DELTA, CREDIT, SCALAR, iCSB);
+		 
+		// ZERO TRACKING
+		
+	
+		
+		// MOTION
+		
+			
 		
 /*		if(g_fPeso > g_fTarget)	// Update SetPoints
 		{
@@ -352,35 +360,43 @@ void FILL()   //   ciclo de llenado
 {
 	if(staEstado == llenando){
 	//	g_sOutputs[0]='F';
-		if(g_fPeso < g_fTarget)
-
+		if(g_fPeso < g_fTarget){
 			FILL_ON;
-		else
+			//cout<<"FILL_ON"<<endl;
+		}
+		else{
 			FILL_OFF;
+			//cout<<"FILL_OFF"<<endl;
+					
 			if(g_bStart == true){
 				//delay_ms(g_iDumpDly);
 				staEstado = vaciando;
+				//cout<<"vaciando"<<endl;
 			}
-			else 
-				{
-					staEstado = reposando;
-				}
-	}
-		 	
+			else{
+				staEstado = reposando;
+				//cout<<"reposando"<<endl;
+			}
+		}
 		//set_ticks(0);
-	
+	}
 }
 
 void DUMP ()   //   ciclo de descarga
 {
 	if(staEstado == vaciando){
-		if(g_fPeso > g_fPesoMin)
+		if(g_fPeso > g_fPesoMin){
+		
 			DUMP_ON;
+			//cout<<"DUMP_ON"<<endl;
+		}
 		else{
 			DUMP_OFF;
+			//cout<<"DUMP_OFF"<<endl;
 			if(g_bStart == true){
 				//delay_ms(g_iFillDly);
 				staEstado = llenando;
+				//cout<<"llenando"<< endl;
 			}
 		}
 	}
@@ -498,7 +514,17 @@ void HOST_COMMANDS(void)
 			break;
 
 		case "QX":	// request extended diagnostics data
+			UPDATE_HOST(2);
+			break;
+			
+		case "QR":
 			UPDATE_HOST(0);
+			g_cTx = 0;
+			break;
+		
+		case "QC":
+			UPDATE_HOST(99);
+			g_cTx = 99;
 			break;
 
 		case "PM":	// minimum weight
@@ -558,6 +584,10 @@ void HOST_COMMANDS(void)
 			write_eeprom(20,g_iDumpDly);
 			printf("DD,%lu\n\r",g_iDumpDly);
 			break;
+		
+		case "DIAGS":
+			g_bDiags = (g_bDiags) ? false:true;
+			break;
 			
 		default:
 			cout << "Comando nulo" << endl;
@@ -569,19 +599,25 @@ void HOST_COMMANDS(void)
 	g_bKeying = false;
 }
 
-void UPDATE_HOST(int Tx)
+void UPDATE_HOST(int Tx = 0)
 {
 	switch (Tx){
 		case 0:
-			printf("x,%lu, %lu, %e, %lu, %12.2f, %u, %u, %u \n\r",g_lCountTotal,g_lP0,g_fP1,g_lPeso,g_fPeso,CREDIT,iCSB,SCALAR);
-		//		<< g_cStatus << g_cInputs << g_cOutputs
-		//		<< endl;
+			printf("%12.2f, %12.2f\r", g_fPeso, g_fAcumulado);	
 			break;
 		case 1:
-			printf(":,%lu, %12lu, %12.2f\n\r", g_lCountTotal , g_lPeso , g_fPeso);								 
+			printf(":,%ld, %12ld, %12.2f\n\r", g_lCountTotal, g_lPeso, g_fPeso);
+			g_cTx = 3;								 
 			break;
+		case 2:
+			printf("x,%ld, %ld, %e, %ld, %12.2f\n\r",g_lCountTotal, g_lP0, g_fP1, g_lPeso, g_fPeso);
+		//		<< g_cStatus << g_cInputs << g_cOutputs
+		//		<< endl;
+			g_cTx = 3;
+			break;
+		case 99:
+			printf("LC1: %10ld, LC2: %ld\r", g_lCount1, g_lCount2);
 		default:
-			cout << g_fPeso << ", "	<< g_fAcumulado << endl;
 			break;			
 				
 	}
@@ -617,7 +653,7 @@ void MAIN()
 	staEstado = reposando;
 	
 	cout << g_iAMT[1] << ", " << g_iAMT[2] << ", " << g_iAMT[3] << ", " << g_iAMT[4] << ", " << g_iAMT[5] << endl;
-	printf("P0 = %lu, P1 = %e, PO = %f, Pmin = %f, Pp = %f\n\r", g_lP0, g_fP1, g_fTarget, g_fPesoMin, g_fTestWeight);
+	printf("P0 = %ld, P1 = %e, PO = %f, Pmin = %f, Pp = %f\n\r", g_lP0, g_fP1, g_fTarget, g_fPesoMin, g_fTestWeight);
 	printf("zt %u, zd %u, md %u, mt %u, fd %u, dd %u\n\r", g_iZtDly, g_iZtDiv, g_iMtDly, g_iMotn, g_iFillDly, g_iDumpDly);
 	
 	switch (restart_cause()){
@@ -635,6 +671,7 @@ void MAIN()
 				DUMP();
 				CALIB();
 				HOST_COMMANDS();
+				UPDATE_HOST(g_cTx);
 				CHECK_TIME_OUT();
 				BEAT;	// keep alive
 			}
