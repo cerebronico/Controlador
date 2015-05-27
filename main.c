@@ -29,9 +29,9 @@ int16 g_iAMT[5];		// smmart filter parameters must be stored and recalled from E
 char sParms[32];		// variable to hold intermediate SMART FILTER values
  
 signed int32 g_lP0;	// unloaded scale count value
-float g_fP1;		// conversion factor, zero tracking division and motion divisions
-int16 g_iZtDly, g_iMtDly, g_iZtDiv, g_iMotn, g_iFillDly, g_iDumpDly;	// zero tracking and motion delay in msec
-float g_fAcumulado, g_fPesoMin, g_fTarget, g_fFlow, g_fOver, g_fFreeFall;
+float g_fP1, g_fKf1, g_fKf2;		// gain & filter
+int16 g_iZtDly, g_iMtDly, g_iFillDly, g_iDumpDly;	// zero tracking and motion delay in msec
+float g_fAcumulado, g_fPesoMin, g_fTarget, g_fFlow, g_fOver, g_fFreeFall, g_fZtDiv, g_fMotn, g_fTemp;
 
 //============================================
 //  global variable define
@@ -39,9 +39,10 @@ float g_fAcumulado, g_fPesoMin, g_fTarget, g_fFlow, g_fOver, g_fFreeFall;
 
 boolean newCount;
 
-signed int32 g_lPeso, g_lCount1, g_lCount2, g_lCountTotal;
-float g_fPeso, g_fTestWeight;
-boolean g_bDiags, g_bUpdHost, g_bKeying, g_bFillDone,  g_bStart, LC1_DATA_RDY, LC2_DATA_RDY;
+signed int32 g_lPeso, g_lCnt_LC1, g_lCnt_LC2, g_lLC1_P0, g_lLC2_P0, g_lCount1, g_lCount2, g_lCountTotal;
+float g_fPeso, g_fTestWeight, g_fMotion;
+boolean g_bDiags, g_bUpdHost, g_bKeying, g_bFillDone,  g_bStart, LC1_DATA_RDY, LC2_DATA_RDY, g_bSetZERO, g_bSetGAIN;
+int16 ZERO_SET_COUNTER, GAIN_SET_COUNTER;
 
 char usr_input[30];		// this character array will be used to take input from the prompt
 int index;				// this will hold the current position in the array
@@ -59,6 +60,10 @@ typedef union
 		unsigned int16 exponent;
 	} parts;
 } float2eeprom;
+
+typedef unsigned int32 tick_t;
+
+tick_t current, Tx_t;
 
 // flag definitions
 char g_cInputs, g_cOutputs, g_cStatus, g_cTx;
@@ -240,17 +245,20 @@ void INIT_HARDWARE(void)	//  initialize system hardware config
 	
 	read_eeprom(10, g_iZtDly);
 	read_eeprom(12, g_iMtDly);
-	read_eeprom(14, g_iZtDiv);
-	read_eeprom(16, g_iMotn);
-	read_eeprom(18, g_iFillDly);
-	read_eeprom(20, g_iDumpDly);
+	read_eeprom(14, g_iFillDly);
+	read_eeprom(16, g_iDumpDly);
 	
 	// scale params	                       	
 	g_lP0 = read_int32_eeprom(40);	// ZERO
+	
 	g_fP1 = read_float_eeprom(60);	// GAIN
 	g_fTarget = read_float_eeprom(64);	//TARGET WEIGHT
 	g_fPesoMin = read_float_eeprom(68);	// MIN WEIGHT TO CONSIDER FOR ZERO
 	g_fTestWeight = read_float_eeprom(72);	// CAL TEST WEIGHT
+	g_fKf1 = read_float_eeprom(76);	// moving average filter constants
+	g_fKf2 = read_float_eeprom(80);	// 
+	g_fZtDiv = read_float_eeprom(84);	// zero tracking range
+	g_fMotn	= read_float_eeprom(88);	// motion tracking
 }
 
 //============================================
@@ -259,7 +267,7 @@ void INIT_HARDWARE(void)	//  initialize system hardware config
 //
 //============================================
 
-void READ_HX711();
+int READ_HX711();
 
 void SET_ZERO(void);
 
@@ -281,14 +289,52 @@ void DUMP ();	// descargar
 
 VOID CALIB();	// calibrar
 
-void READ_HX711()
+int READ_HX711()
 {
-	if(LC1_DATA_RDY & LC2_DATA_RDY){		
-		g_lCountTotal = g_lCount1 + g_lCount2;
+	static signed int32 newCount1, newCount2;
+	 
+	if(LC1_DATA_RDY & LC2_DATA_RDY){	// si los convertidores tienen datos
+		
+		g_lCnt_LC1 = g_lCount1 - g_lLC1_P0;
+		g_lCnt_LC2 = g_lCount2 - g_lLC2_P0;
+		
+		if(g_bSetZERO){
+
+			if((ZERO_SET_COUNTER--) >=0){
+				
+				newCount1 = newCount1 + g_fKf1*(g_lCount1-NewCount1);
+				newCount2 = newCount2 + g_fKf2*(g_lCount2-NewCount2);
+				printf("ZEROING... %d\n\r", ZERO_SET_COUNTER);
+			}
+			else{
+				g_lLC1_P0 = NewCount1;
+				g_lLC2_P0 = NewCount2;
+				g_bSetZERO = false;
+				printf("ZEROING DONE!\n\r");
+			}
+
+		LC1_DATA_RDY = LC2_DATA_RDY = false;			
+		newCount = false;
+
+		return(0);
+			
+		}
+		
+		if (g_bSetGAIN){
+			
+			if(GAIN_SET_COUNTER-- >=0){
+								
+				GAIN_SET_COUNTER =7;
+			}
+		}
+		
+		g_lCountTotal = g_lCnt_LC1 + g_lCnt_LC2;
 
 		LC1_DATA_RDY = LC2_DATA_RDY = false;
 		newCount = true;
 	}
+	
+	return(1);
 }
 
 void START_PROCESS()
@@ -303,8 +349,10 @@ void START_PROCESS()
 void CONVERT_WEIGHT()   // read Weight data
 {
 	static signed int32 old_cnt, DELTA, CREDIT, SCALAR;
-	static signed int iCSB;
+	static signed int iCSB, iMotionCounter;
+	static float fPesoAnterior;
 	signed int tmp;
+	boolean TEST;
 
 	if(newCount){
 		
@@ -322,8 +370,8 @@ void CONVERT_WEIGHT()   // read Weight data
 		
 		tmp = (g_iAMT[4]-abs(iCSB));
 		SCALAR = (tmp>0)?tmp:0;
-		
 		old_cnt = old_cnt + (DELTA/(pow(SCALAR,2) + g_iAMT[5]));
+
 		g_lPeso = old_cnt - g_lP0 ;   // ajuste del CERO;
 		g_fPeso = floor(g_fP1 * g_lPeso/0.05)*0.05;   // peso calibrado
 
@@ -331,26 +379,22 @@ void CONVERT_WEIGHT()   // read Weight data
 		 
 		// ZERO TRACKING
 		
+		g_fTemp = abs(g_fPeso-fPesoAnterior); // < g_fMotion;
 	
-		
 		// MOTION
-		
-			
-		
-/*		if(g_fPeso > g_fTarget)	// Update SetPoints
-		{
-			FILL_OFF;
-			g_bFillDone = true;
-			g_sOutputs[0]=' ';
-			DUMP_ON;
+		if(g_fTemp < g_fMotn){
+			//cout<<"menor \n\r"<<endl;
+			if((iMotionCounter++ > g_iMtDly) && Motion)
+				Motion = 0;
 		}
-		else if(g_fPeso < g_fPesoMin)
-		{   
-			DUMP_OFF;
-			FILL_ON;
-			g_bDumped = true;
-		}*/
-		
+		else{
+			//printf("mayor %10f\n\r", g_fMotion);
+			iMotionCounter = 0;
+			Motion = 1;
+			Under  = 1;
+		}
+	
+		fPesoAnterior = g_fPeso;	
 		newCount = false;
 
 	}
@@ -362,19 +406,23 @@ void FILL()   //   ciclo de llenado
 	//	g_sOutputs[0]='F';
 		if(g_fPeso < g_fTarget){
 			FILL_ON;
+			Filling = 1;
 			//cout<<"FILL_ON"<<endl;
 		}
 		else{
 			FILL_OFF;
+			Filling = 0;
 			//cout<<"FILL_OFF"<<endl;
 					
-			if(g_bStart == true){
+			if(g_bStart == true && !Motion){
 				//delay_ms(g_iDumpDly);
+				
+				g_fAcumulado+=g_fPeso;
 				staEstado = vaciando;
 				//cout<<"vaciando"<<endl;
 			}
 			else{
-				staEstado = reposando;
+				staEstado = llenando;
 				//cout<<"reposando"<<endl;
 			}
 		}
@@ -461,11 +509,13 @@ void HOST_COMMANDS(void)
 		
 	switch (commands[0]){
 		case "S":
-			SET_SPAN();
+			g_bSetGAIN = true;
+			GAIN_SET_COUNTER = atoi(commands[1]);
 			break;
 	
 		case "Z":
-			SET_ZERO();
+			g_bSetZERO = true;
+			ZERO_SET_COUNTER = atoi(commands[1]);
 			break;
 		
 		case "R":
@@ -479,15 +529,14 @@ void HOST_COMMANDS(void)
 			g_bStart = FALSE;
 			break;
 				
-		case "PO":
+		case "PO":	// peso objetivo
 			g_fTarget = atof(commands[1]);
 			write_float_eeprom(64,g_fTarget);
 			printf("PO, %f \r\n",g_fTarget);
 			break;
 			
 		case "O":	// open
-			if(!g_bStart){
-				
+			if(!g_bStart){				
 				DUMP_OFF;
 				delay_ms(g_iFillDly);	//TODO: debe ser parametizable
 				FILL_ON;
@@ -510,21 +559,7 @@ void HOST_COMMANDS(void)
 			break;
 
 		case "Q":	// request data
-			UPDATE_HOST(1);
-			break;
-
-		case "QX":	// request extended diagnostics data
-			UPDATE_HOST(2);
-			break;
-			
-		case "QR":
-			UPDATE_HOST(0);
-			g_cTx = 0;
-			break;
-		
-		case "QC":
-			UPDATE_HOST(99);
-			g_cTx = 99;
+			UPDATE_HOST(atoi(commands[1]));
 			break;
 
 		case "PM":	// minimum weight
@@ -540,15 +575,15 @@ void HOST_COMMANDS(void)
 			break;
 
 		case "ZD":	// zero divisions
-			g_iZtDiv = atoi(commands[1]);
-			write_eeprom(14, g_iZtDiv);
-			printf("ZD, %u \r\n", g_iZtDiv);
+			g_fZtDiv = atof(commands[1]);
+			write_float_eeprom(84, g_fZtDiv);
+			printf("ZD, %u \r\n", g_fZtDiv);
 			break;
 		
 		case "MT":	// motion divisions
-			g_iMotn = atoi(commands[1]);
-			write_eeprom(16, g_iMotn);
-			printf("MT, %u \r\n", g_iMotn);
+			g_fMotn = atof(commands[1]);
+			write_float_eeprom(88, g_fMotn);
+			printf("MT, %f \r\n", g_fMotn);
 			break;
 		
 		case "MD":	// motion delay
@@ -557,7 +592,7 @@ void HOST_COMMANDS(void)
 			printf("MD, %u \r\n", g_iMtDly);			
 			break;
 			
-		case "A":
+		case "A":	// smart filter input as: param, value
 			i = atoi(commands[1]);
 			g_iAMT[i] = atoi(commands[2]);
 			write_eeprom((i-1)*2, g_iAMT[i]);
@@ -567,22 +602,30 @@ void HOST_COMMANDS(void)
 			cout << "Parametro " << i-1 << ", " << g_iAMT[i] << ": " << variable<< endl;
 			break;
 			
-		case "TW":
+		case "TW":	// test weight
 			g_fTestWeight = atof(commands[1]);
 			write_float_eeprom(72,g_fTestWeight);
 			printf("TW,%f\n\r",g_fTestWeight);
 			break;
 			
-		case "FD":
+		case "FD":	// fil delay
 			g_iFillDly = atoi(commands[1]);
 			write_eeprom(18,g_iFillDly);
 			printf("FD,%u\n\r",g_iFillDly);
 			break;
 		
-		case "DD":
+		case "DD":	// dump delay
 			g_iDumpDly = atoi(commands[1]);
 			write_eeprom(20,g_iDumpDly);
 			printf("DD,%lu\n\r",g_iDumpDly);
+			break;
+			
+		case "K":	// moving average filter constant
+			g_fKf1 = atof(commands[1]);
+			g_fKf2 = atof(commands[2]);
+			write_float_eeprom(76,g_fKf1);
+			write_float_eeprom(80,g_fKf2);
+			printf("k1 = %10f, k2 = %10f", g_fKf1, g_fKf2);
 			break;
 		
 		case "DIAGS":
@@ -601,23 +644,47 @@ void HOST_COMMANDS(void)
 
 void UPDATE_HOST(int Tx = 0)
 {
+	current = get_ticks();
 	switch (Tx){
 		case 0:
-			printf("%12.2f, %12.2f\r", g_fPeso, g_fAcumulado);	
+			if ((current - Tx_t) > 100){
+				printf("0,%12.2f, %12.2f, %x, %x, %x\r", g_fPeso, g_fAcumulado, g_cInputs, g_cOutputs, g_cStatus);
+         		
+//				printf("0,%12.2f, %12.2f, %x, %x, %x\r", g_fPeso, g_fTemp, g_cInputs, g_cOutputs, g_cStatus);
+				Tx_t = current;
+			}
 			break;
+
 		case 1:
-			printf(":,%ld, %12ld, %12.2f\n\r", g_lCountTotal, g_lPeso, g_fPeso);
-			g_cTx = 3;								 
+			printf("1,%ld, %12ld, %12.2f\n\r", g_lCountTotal, g_lPeso, g_fPeso);							 
 			break;
+			
 		case 2:
-			printf("x,%ld, %ld, %e, %ld, %12.2f\n\r",g_lCountTotal, g_lP0, g_fP1, g_lPeso, g_fPeso);
+			printf("2,%ld, %ld, %e, %ld, %12.2f\n\r",g_lCountTotal, g_lP0, g_fP1, g_lPeso, g_fPeso);
 		//		<< g_cStatus << g_cInputs << g_cOutputs
 		//		<< endl;
-			g_cTx = 3;
 			break;
+			
+		case 3:
+			printf("3,LC1: %10ld, LC2: %10ld\n\r", g_lCnt_LC1, g_lCnt_LC2);
+			break;
+			
+		case 4:
+			printf("4,LC1: %10ld, %10ld, LC2: %10ld, %ld\n\r", g_lCount1, g_lLC1_P0, g_lCount2, g_lLC2_P0);
+			break;
+			
+		case 5:
+			cout << g_iAMT[1] << ", " << g_iAMT[2] << ", " << g_iAMT[3] << ", " << g_iAMT[4] << ", " << g_iAMT[5] << endl;
+			printf("P0 = %ld, P1 = %e, PO = %f, Pmin = %f, Pp = %f\n\r", g_lP0, g_fP1, g_fTarget, g_fPesoMin, g_fTestWeight);
+			printf("zt %u, zd %10f, md %u, mt %10f, fd %u, dd %u\n\r", g_iZtDly, g_fZtDiv, g_iMtDly, g_fMotn, g_iFillDly, g_iDumpDly);
+			printf("kf1 = %10f, kf2 = %10f\n\r", g_fKf1, g_fKf2);
+			break;
+		
 		case 99:
-			printf("LC1: %10ld, LC2: %ld\r", g_lCount1, g_lCount2);
+			break;
+			
 		default:
+			printf("99,bad juju\r");
 			break;			
 				
 	}
@@ -648,13 +715,12 @@ void MAIN()
 	index=0;
 	input_ready=false;
 	
+	
 	// process variables
 
 	staEstado = reposando;
 	
-	cout << g_iAMT[1] << ", " << g_iAMT[2] << ", " << g_iAMT[3] << ", " << g_iAMT[4] << ", " << g_iAMT[5] << endl;
-	printf("P0 = %ld, P1 = %e, PO = %f, Pmin = %f, Pp = %f\n\r", g_lP0, g_fP1, g_fTarget, g_fPesoMin, g_fTestWeight);
-	printf("zt %u, zd %u, md %u, mt %u, fd %u, dd %u\n\r", g_iZtDly, g_iZtDiv, g_iMtDly, g_iMotn, g_iFillDly, g_iDumpDly);
+	UPDATE_HOST(5);
 	
 	switch (restart_cause()){
 		case RESTART_MCLR:
@@ -671,7 +737,7 @@ void MAIN()
 				DUMP();
 				CALIB();
 				HOST_COMMANDS();
-				UPDATE_HOST(g_cTx);
+				UPDATE_HOST(0);
 				CHECK_TIME_OUT();
 				BEAT;	// keep alive
 			}

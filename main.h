@@ -22,6 +22,12 @@
 #define PRESS_OK		!input(PIN_B9)	// pin 23_
 #define FULL			!input(PIN_F6)	// pin 16 INT0
 
+#define DUMP_GATE_LS_FLAG	0
+#define FILL_GATE_LS_FLAG	1
+#define OVERFLOW_FLAG	2
+#define PRESS_OK_FLAG	3
+#define FULL_FLAG	4
+
 //  Outputs
 #define FILL_ON		output_high(PIN_B0)	
 #define FILL_OFF	output_low(PIN_B0)
@@ -41,14 +47,16 @@
 
 #use rs232(UART1A, baud=115200, restart_wdt, errors, stream=Host)
 
-#use timer(timer=3, tick=100us, bits=32, NOISR)
+#use timer(timer=2, tick=1ms, bits=32, NOISR)
 
 #define TICK_TYPE unsigned int32
                                              
 #define ESPERA 100
                                     
 //#use rtos(timer=1, minor_cycle=2ms, statistics)
-#build(stack=1024)
+#build(stack=512)
 
 #define _ON true
 #define _OFF false
+
+
