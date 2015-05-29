@@ -29,7 +29,7 @@ int16 g_iAMT[5];		// smmart filter parameters must be stored and recalled from E
  
 signed int32 g_lP0;	// unloaded scale count value
 float g_fP1, g_fKf1, g_fKf2;		// gain & filter
-int16 g_iZtDly, g_iMtDly, g_iFillDly, g_iDumpDly;	// zero tracking and motion delay in msec
+int16 g_iZtDly, g_iMtDly, g_iFillDly, g_iDumpDly, g_iTimeOut;	// zero tracking and motion delay in msec
 float g_fAcumulado, g_fPesoMin, g_fTarget, g_fFlow, g_fOver, g_fFreeFall, g_fZtDiv, g_fMotn, g_fTemp;
 
 //============================================
@@ -49,7 +49,7 @@ boolean input_ready;	// this will signal to the kernel that input is ready to be
 
 // enumerate different commands
 enum _Mode {Normal, SetZero, SetGain} eMode;
-enum _State {llenando, reposando, vaciando, esperandoLlenar, vaciar, lleno, vacio} staEstado;
+enum _State {llenando, reposando, vaciando, esperandoLlenar, esperandoVaciar, vaciar, lleno, vacio} staEstado;
 
 typedef union 
 {
@@ -62,7 +62,7 @@ typedef union
 
 typedef unsigned int32 tick_t;
 
-tick_t current, Tx_t, fill_timer, fill_delay, dump_timer, dump_delay;
+tick_t current, Tx_t, fill_timer, fill_delay, dump_timer, dump_delay, fill_timeout_timer, fill_timeout_delay;
 
 // flag definitions
 char g_cInputs, g_cOutputs, g_cStatus;
@@ -239,6 +239,7 @@ void INIT_HARDWARE(void)	//  initialize system hardware config
 	read_eeprom(12, g_iMtDly);
 	read_eeprom(14, g_iFillDly);
 	read_eeprom(16, g_iDumpDly);
+	read_eeprom(18, g_iTimeOut);
 			
 	// scale params	                       	
 	g_lLC1_P0 = read_int32_eeprom(40);	// ZERO
@@ -266,7 +267,7 @@ void SET_GAIN(void);
 void HOST_COMMANDS (void);
 void _BEAT(void);
 void CONVERT_WEIGHT(int32 cnt);
-void UPDATE_HOST(int Tx);
+void UPDATE_HOST(int Tx=0);
 void UPDATE_IO();
 void PROCESS(void);
 void FILL();	// llenar
@@ -313,12 +314,15 @@ void READ_HX711(_Mode m)
 			
 			case SetGain:
 				if(GAIN_SET_COUNTER-- >=0){
-					GAIN_SET_COUNTER =7;
+					g_lPeso = g_lCountTotal;
+					g_fP1 = g_fTestWeight/g_lPeso;
+					write_float_eeprom(60, g_fP1);
+					printf("P1=%e\n\r",g_fP1);
+					eMode = Normal;
 				}
 				break;
 				
 			default:
-
 		}		
 	}
 }
@@ -385,15 +389,16 @@ void CONVERT_WEIGHT()   // read Weight data
 
 void FILL()   //   ciclo de llenado
 {
-	fill_timer = get_ticks();
+	fill_timeout_timer = get_ticks();
 
 	if(Start){
 		switch (staEstado){
 			case vacio:
-				if(g_fPeso < g_fTarget){
+				
+				if(g_fPeso < g_fTarget) {//			}&& (fill_timer - fill_delay) > g_iFillDly){
 					FILL_ON;	// this is the physical output
 					bFill = 1;
-					fill_delay = fill_timer;
+					fill_timeout_delay = get_ticks();
 					staEstado = llenando;
 				}
 				else{
@@ -405,8 +410,8 @@ void FILL()   //   ciclo de llenado
 				break;
 			
 			case llenando:
-				time_out = (fill_timer - fill_delay) > 10000;	
-				if(g_fPeso >= g_fTarget){ // || time_out){
+				time_out = (fill_timeout_timer - fill_timeout_delay) > g_iTimeOut;	
+				if ((g_fPeso >= g_fTarget) || (time_out && (g_fPeso > g_fPesoMin))){
 					FILL_OFF;
 					bFill = 0;	// this is a flag only
 					staEstado = lleno;
@@ -416,7 +421,7 @@ void FILL()   //   ciclo de llenado
 			case lleno:
 				if(!Motion){
 					lDropCounter++;	// contador de descargas
-					g_fAcumulado+=g_fPeso;
+					g_fAcumulado += g_fPeso;
 					g_fLastWeight = g_fPeso;
 					staEstado = vaciar;
 				}
@@ -430,36 +435,40 @@ void FILL()   //   ciclo de llenado
 void DUMP ()   //   ciclo de descarga
 {
 	if(Start){
-		switch (staEstado)
-		{
+		dump_timer = get_ticks();
+		fill_timer = dump_timer;
+
+		switch (staEstado){
 			case vaciar:
-				if(g_fPeso >= g_fPesoMin){
-					DUMP_ON;
-					bDump = 1;
-					staEstado = vaciando;
-					
-				}
+				DUMP_ON;
+				bDump = 1;
+				staEstado = vaciando;
 				break;
 
 			case vaciando:
 				if(g_fPeso < g_fPesoMin){
+					staEstado = esperandoVaciar;
+					dump_delay = get_ticks();			
+				}
+				break;
+
+			case esperandoVaciar:
+				if((dump_timer - dump_delay) > g_iDumpDly){
 					DUMP_OFF;
 					bDump = 0;
+					staEstado = esperandoLlenar;
+					fill_delay = get_ticks();
+				}
+				break;
+				
+			case esperandoLlenar:
+				if((fill_timer - fill_delay) > g_iFillDly){
 					staEstado = vacio;
 				}
 				break;
-			
 			default:
 		}
 	}
-}
-
-void SET_GAIN(span_counter)	// Rango
-{
-	g_lPeso = g_lCountTotal - g_lP0;
-	g_fP1 = g_fTestWeight/g_lPeso;
-	write_float_eeprom(60, g_fP1);
-	printf("P1=%e\n\r",g_fP1);
 }
 
 void HOST_COMMANDS(void)
@@ -484,7 +493,6 @@ void HOST_COMMANDS(void)
 		case "G":
 			eMode = SetGain;
 			GAIN_SET_COUNTER = atoi(commands[1]);
-			SET_GAIN(GAIN_SET_COUNTER);
 			break;
 	
 		case "Z":
@@ -589,6 +597,12 @@ void HOST_COMMANDS(void)
 			write_eeprom(16,g_iDumpDly);
 			printf("DD,%lu\n\r",g_iDumpDly);
 			break;
+		
+		case "TO":	// fill time out
+			g_iTimeOut = atoi(commands[1]);
+			write_eeprom(18,g_iTimeOut);
+			printf("TO,%lu\n\r", g_iTimeOut);
+			break;
 			
 		case "K":	// moving average filter constant
 			g_fKf1 = atof(commands[1]);
@@ -643,7 +657,7 @@ void UPDATE_HOST(int Tx = 0)
 		case 5:
 			cout << g_iAMT[1] << ", " << g_iAMT[2] << ", " << g_iAMT[3] << ", " << g_iAMT[4] << ", " << g_iAMT[5] << endl;
 			printf("LC1 P0 = %ld, LC2 P0 = %ld, P1 = %e, PO = %f, Pmin = %f, Pp = %f\n\r",g_lLC1_P0, g_lLC2_P0, g_fP1, g_fTarget, g_fPesoMin, g_fTestWeight);
-			printf("zt %u, zd %10f, md %u, mt %10f, fd %u, dd %u\n\r", g_iZtDly, g_fZtDiv, g_iMtDly, g_fMotn, g_iFillDly, g_iDumpDly);
+			printf("zt %u, zd %10f, md %u, mt %10f, fd %u, dd %u, to %u\n\r", g_iZtDly, g_fZtDiv, g_iMtDly, g_fMotn, g_iFillDly, g_iDumpDly, g_iTimeOut);
 			printf("kf1 = %10f, kf2 = %10f\n\r", g_fKf1, g_fKf2);
 			break;
 		
@@ -677,10 +691,6 @@ void UPDATE_IO(void)
 void MAIN()
 {
 	INIT_HARDWARE();
-	TICK_TYPE CurrentTick,PreviousTick;
-
-	//Example program using Tick Timer
-	CurrentTick = PreviousTick = get_ticks();
 
 	char Text[] = "DesiCo. Systems\r";
 	cout<<Text<<endl;
@@ -688,7 +698,6 @@ void MAIN()
 	// initialize input variables
 	index=0;
 	input_ready=false;
-	
 	
 	// process variables
 
@@ -711,7 +720,7 @@ void MAIN()
 				FILL();
 				DUMP();
 				HOST_COMMANDS();
-				UPDATE_HOST(0);
+				UPDATE_HOST();
 				UPDATE_IO();
 				BEAT;	// keep alive
 			}
