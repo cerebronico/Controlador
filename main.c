@@ -361,7 +361,7 @@ void CONVERT_WEIGHT()   // read Weight data
 		old_cnt = old_cnt + (DELTA/(pow(SCALAR,2) + g_iAMT[5]));
 
 		g_lPeso = old_cnt - g_lP0 ;   // ajuste del CERO;
-		g_fPeso = floor(g_fP1 * g_lPeso/0.05)*0.05;   // peso calibrado
+		g_fPeso = floor(g_fP1 * g_lPeso / 0.05) * 0.05;   // peso calibrado
 
 		if(g_bDiags) printf("%10ld, %10ld, %10ld, %10d\r", DELTA, CREDIT, SCALAR, iCSB);
 		 
@@ -506,7 +506,9 @@ void HOST_COMMANDS(void)
 		
 		case "P":	// stop
 			DUMP_OFF;
+			bDump = 0;
 			FILL_OFF;
+			bFill = 0;
 			Start = FALSE;
 			break;
 				
@@ -519,21 +521,27 @@ void HOST_COMMANDS(void)
 		case "O":	// open
 			if(!Start){				
 				DUMP_OFF;
+				bDump = 0;
 				FILL_ON;
+				bFill = 1;
 			}
 			break;
 		
 		case "C":   // close
 			if(!Start){
 				FILL_OFF;
+				bFill = 0;
 				DUMP_ON;
+				bDump = 1;
 			}
 			break;
 		
 		case "D":
 			cal_on;
 			FILL_ON;
+			bFill = 1;
 			DUMP_ON;
+			bDump = 1;
 			break;
 
 		case "Q":	// request data
