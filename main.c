@@ -30,7 +30,7 @@ int16 g_iAMT[5];		// smmart filter parameters must be stored and recalled from E
 signed int32 g_lP0;	// unloaded scale count value
 float g_fP1, g_fKf1, g_fKf2;		// gain & filter
 int16 g_iZtDly, g_iMtDly, g_iFillDly, g_iDumpDly, g_iTimeOut;	// zero tracking and motion delay in msec
-float g_fAcumulado, g_fPesoMin, g_fTarget, g_fFlow, g_fOver, g_fFreeFall, g_fZtDiv, g_fMotn, g_fTemp;
+float g_fAcumulado, g_fPesoMin, g_fTarget, g_fZtDiv, g_fMotn, g_fTemp, g_fGk1, g_fGk2;
 
 //============================================
 //  global variable define
@@ -86,6 +86,7 @@ char g_cInputs, g_cOutputs, g_cStatus;
 #bit Under = g_cStatus.2
 #bit Start = g_cStatus.3
 #bit Time_Out = g_cStatus.4
+#bit Zero = g_cStatus.5
 
 
 //============================================
@@ -213,8 +214,8 @@ void INIT_HARDWARE(void)	//  initialize system hardware config
 	setup_adc_ports(NO_ANALOGS);
 	set_tris_b(0b0000001111000000);
 	set_tris_d(0xFFFF);
-	enable_interrupts(INT_EXT0);
-	ext_int_edge(0,H_TO_L);
+//	enable_interrupts(INT_EXT0);
+//	ext_int_edge(0,H_TO_L);
 	enable_interrupts(INT_EXT1);
 	ext_int_edge(1, H_TO_L);	
 	enable_interrupts(INT_EXT2);
@@ -253,6 +254,8 @@ void INIT_HARDWARE(void)	//  initialize system hardware config
 	g_fKf2 = read_float_eeprom(80);	// 
 	g_fZtDiv = read_float_eeprom(84);	// zero tracking range
 	g_fMotn	= read_float_eeprom(88);	// motion tracking
+	g_fGk1 = read_float_eeprom(92);	// constante de igualacion
+	g_fGk2 = read_float_eeprom(96);	
 }
 
 //============================================
@@ -314,10 +317,24 @@ void READ_HX711(_Mode m)
 			
 			case SetGain:
 				if(GAIN_SET_COUNTER-- >=0){
-					g_lPeso = g_lCountTotal;
-					g_fP1 = g_fTestWeight/g_lPeso;
+					
+					g_fGk1 = 1;
+					g_fGk2 = 1;
+					
+					if (g_lCnt_LC1 > g_lCnt_LC2)
+						g_fGk2 = (float)g_lCnt_LC2 / g_lCnt_LC1;
+					else
+						g_fGk1 = (float)g_lCnt_LC1 / g_lCnt_LC2;
+							
+					write_float_eeprom(92, g_fGk1);
+					write_float_eeprom(96, g_fGk2);
+					
+					//g_lPeso = g_fGk1 *  g_lCnt_LC1 + g_fGk2 * g_lCnt_LC2;
+					g_lPeso = g_lCnt_LC1 + g_lCnt_LC2;
+											
+					g_fP1 = g_fTestWeight / g_lPeso;
 					write_float_eeprom(60, g_fP1);
-					printf("P1=%e\n\r",g_fP1);
+					printf("P1=%e, Gk1= %f, Gk2= %f, lc1= %ld, lc2= %ld\n\r",g_fP1, g_fGk1, g_fGk2, g_lCnt_LC1, g_lCnt_LC2);
 					eMode = Normal;
 				}
 				break;
@@ -338,7 +355,7 @@ void START_PROCESS()
 void CONVERT_WEIGHT()   // read Weight data
 {
 	static signed int32 old_cnt, DELTA, CREDIT, SCALAR;
-	static signed int iCSB, iMotionCounter;
+	static signed int iCSB, iMotionCounter, iZeroCounter;
 	static float fPesoAnterior;
 	signed int tmp;
 
@@ -365,8 +382,6 @@ void CONVERT_WEIGHT()   // read Weight data
 
 		if(g_bDiags) printf("%10ld, %10ld, %10ld, %10d\r", DELTA, CREDIT, SCALAR, iCSB);
 		 
-		// ZERO TRACKING
-		
 		g_fTemp = abs(g_fPeso-fPesoAnterior); // < g_fMotion;
 	
 		// MOTION
@@ -380,7 +395,17 @@ void CONVERT_WEIGHT()   // read Weight data
 			iMotionCounter = 0;
 			Motion = 1;
 		}
-	
+
+		// ZERO TRACKING
+		if(abs(g_fPeso) < g_fZtDiv){
+			if((iZeroCounter++ > g_iZtDly) && !Zero)
+			Zero = 1;
+		}
+		else{
+			iZeroCounter = 0;
+			Zero = 0;
+		}
+			
 		fPesoAnterior = g_fPeso;	
 		newCount = false;
 
@@ -665,8 +690,8 @@ void UPDATE_HOST(int Tx = 0)
 		case 5:
 			cout << g_iAMT[1] << ", " << g_iAMT[2] << ", " << g_iAMT[3] << ", " << g_iAMT[4] << ", " << g_iAMT[5] << endl;
 			printf("LC1 P0 = %ld, LC2 P0 = %ld, P1 = %e, PO = %f, Pmin = %f, Pp = %f\n\r",g_lLC1_P0, g_lLC2_P0, g_fP1, g_fTarget, g_fPesoMin, g_fTestWeight);
-			printf("zt %u, zd %10f, md %u, mt %10f, fd %u, dd %u, to %u\n\r", g_iZtDly, g_fZtDiv, g_iMtDly, g_fMotn, g_iFillDly, g_iDumpDly, g_iTimeOut);
-			printf("kf1 = %10f, kf2 = %10f\n\r", g_fKf1, g_fKf2);
+			printf("zt %u, zd %6.2f, md %u, mt %6.2f, fd %u, dd %u, to %u\n\r", g_iZtDly, g_fZtDiv, g_iMtDly, g_fMotn, g_iFillDly, g_iDumpDly, g_iTimeOut);
+			printf("kf1 = %10f, kf2 = %10f, Gk1 %f, Gk2 %f\n\r", g_fKf1, g_fKf2, g_fGk1, g_fGk2);
 			break;
 		
 		case 99:
@@ -684,7 +709,7 @@ void UPDATE_IO(void)
 	FGLS = FILL_GATE_LS;
 	OVRF = OVERFLOW	;
 	PRSF = PRESS_OK	;
-	FULF = FULL	;
+//	FULF = FULL	;
 }            
 
 //=================================

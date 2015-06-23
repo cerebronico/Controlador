@@ -20,7 +20,7 @@
 #define FILL_GATE_LS	!input(PIN_B7)
 #define OVERFLOW		!input(PIN_B8)
 #define PRESS_OK		!input(PIN_B9)	// pin 23_
-#define FULL			!input(PIN_F6)	// pin 16 INT0
+//define FULL			!input(PIN_F6)	// pin 16 INT0
 
 #define DUMP_GATE_LS_FLAG	0
 #define FILL_GATE_LS_FLAG	1

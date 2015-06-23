@@ -16,7 +16,7 @@
 	Def Out Path=C:\Dropbox\Proyectos\Balanza
 [uemakeXp]
 	Compiler=Configs\CCS C Compiler\Application
-	ReleaseMode=0
+	ReleaseMode=1
 	Files=3391037043
 [Configs\CCS C Compiler\Application]
 	OutputDirectory_ReleaseMode=Release
