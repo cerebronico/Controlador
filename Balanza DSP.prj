@@ -15,9 +15,9 @@
 	CTags Legacy Support=0
 	Def Out Path=C:\Dropbox\Proyectos\Balanza
 [uemakeXp]
-	Compiler=Configs\CCS C Compiler\Application
-	ReleaseMode=1
-	Files=3391037043
+Compiler=Configs\CCS C Compiler\Application
+ReleaseMode=1
+Files=3125796569
 [Configs\CCS C Compiler\Application]
 	OutputDirectory_ReleaseMode=Release
 	OutputDirectory_DebugMode=Debug
@@ -43,5 +43,5 @@
 	Selected Debugger=0
 	Source Paths=
 [Files]
-	0=main.c
-	1=main.h
+	0=main.h
+	1=..\..\..\La Universal\Ricchiareli\Controlador\main.c

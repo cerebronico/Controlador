@@ -1,10 +1,10 @@
 [trace]
-top=25
-left=25
-height=547
+top=303
+left=406
+height=548
 width=587
-p2showall=1
-p2showmsg=1
+p2showall=0
+p2showmsg=0
 p3showall=0
 p3highlight=1
 p1msgs=0
@@ -14,6 +14,6 @@ p3format=0
 p3seconds=3
 triggertype=0
 triggername=triggername
-screen=1
+screen=8
 [tracetimers]
 count=0

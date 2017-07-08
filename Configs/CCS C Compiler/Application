@@ -80,7 +80,7 @@ TargetExt = .HEX
 ReleaseOut = Release
 DebugOut = Debug
 UseFullPaths = 1
-UseDosNames = 0
+UseDosNames = 1
 Excludes = $(Excluded Files)
 BuildOnly = 1
 
@@ -116,3 +116,4 @@ Title=Show makefile
 Cmd0=uestudio $(UESMAKEFILE)
 ShowWindow=1
 DisplayConsole=0
+
