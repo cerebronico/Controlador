@@ -39,17 +39,28 @@ Controlador para balanza con HX711
 
 char ID = '1';    	//device physical address
 
-int16 g_iAMT[5];  	// smart filter parameters must be stored and recalled from EEPROM
+struct scale_parms{
+	int displayed_resolution;
+	int	division_increment;
+	int	decimal_position;
+	float calibration_weight;
+} balanza;
+
+int16 g_iAMT[5]  	// smart filter parameters must be stored and recalled from EEPROM
+	, g_iZtDly
+	, g_iMtDly
+	, g_lFillDly
+	, g_lDumpDly
+	, g_lLockDly;   // zero tracking and motion delay in msec
  
 int32 g_lP0;  		// unloaded scale count value 
-float g_fP1, g_fKf; // gain & filter
-int16 g_iZtDly, g_iMtDly, g_lFillDly, g_lDumpDly, g_lLockDly;   // zero tracking and motion delay in msec
-float g_fAcumulado
+
+float g_fP1, g_fKf	// gain & filter
+	, g_fAcumulado
 	, g_fPesoMin
 	, g_fTarget
 	, g_fPreliminar
 	, g_fFree_Fall
-	, g_fLast_Free_Fall
 	, g_fTol
 	, g_fZtDiv
 	, g_fMotn
@@ -253,7 +264,7 @@ void timer1_isr(void)  // con este verificamos el fin de la trasnmision del mens
 //
 //============================================
 
-void INIT_HARDWARE(void)   //  initialize system hardware config
+void init_hardware(void)   //  initialize system hardware config
 {   
    setup_adc_ports(NO_ANALOGS);
    set_tris_b(0b0000001111000000);
@@ -305,19 +316,15 @@ void INIT_HARDWARE(void)   //  initialize system hardware config
 //
 //============================================
 
-int READ_HX711(int MODE = 0);
-void SET_ZERO(void);
-void SET_GAIN(void);
-void HOST_COMMANDS (void);
-void _BEAT(void);
-void CONVERT_WEIGHT(int32 cnt);
-void UPDATE_HOST(int Tx=99);
-void UPDATE_IO();
-void PROCESS(void);
-void FILL();   // llenar
-void DUMP();   // descargar
+int read_hx711(int MODE = 0);
+void host_commands (void);
+void convert_to_weight(int32 cnt);
+void update_host(int Tx=99);
+void update_io();
+void fill();   // llenar
+void dump();   // descargar
 
-void READ_HX711(_Mode m)
+void read_hx711(_Mode m)
 {
    static int32 ad_count;	// analog-to-digital converter count
     
@@ -368,48 +375,48 @@ void READ_HX711(_Mode m)
    }
 }
 
-void START_PROCESS()
+void start_process()
 {
    bStart = TRUE;
    staEstado = vacio;    
 }
 
-void PESO_MINIMO(par)
+void peso_minimo(char *par)
 {
    g_fPesoMin = atof(par);
    write_float_eeprom(68,g_fPesoMin);
    printf("PM, %f\r",g_fPesoMin);
 }
 
-void ZERO_TRACKING(par)
+void zero_tracking(char *par)
 {
    g_iZtDly = atoi(par);
    write_eeprom(10, g_iZtDly);
    printf("ZT, %u\r", g_iZtDly);
 }
 
-void ZERO_DIVISIONS(par)
+void zero_divisions(char *par)
 {
    g_fZtDiv = atof(par);
    write_float_eeprom(84, g_fZtDiv);
    printf("ZD, %f\r", g_fZtDiv);
 }
 
-void MOTION_TRACKING(par)
+void motion_tracking(char *par)
 {
    g_iMtDly = atoi(par);
    write_eeprom(12, g_iMtDly);
    printf("MT, %u\r", g_iMtDly);         
 }
 
-void MOTION_DIVISIONS(par)
+void motion_divisions(char *par)
 {
    g_fMotn = atof(par);
    write_float_eeprom(88, g_fMotn);
    printf("MD, %f\r", g_fMotn);
 }
 
-void CONVERT_WEIGHT()   // read Weight data
+void convert_to_weight()   // read Weight data
 {
    static int32 old_cnt, DELTA, CREDIT, SCALAR;
    static int iCSB, iMotionCounter, iZeroCounter;
@@ -435,8 +442,7 @@ void CONVERT_WEIGHT()   // read Weight data
       old_cnt = old_cnt + (DELTA/(pow(SCALAR,2) + g_iAMT[5]));
 
       g_lPeso = old_cnt - g_lP0 ;   // ajuste del CERO;
-      //g_fPeso = floor(g_fP1 * g_lPeso / 10) * 10;   // peso calibrado
-      g_fPeso = floor(g_fP1 * g_lPeso / 10 + 0.5) * 10;   // peso calibrado
+      g_fPeso = floor(g_fP1 * g_lPeso / balanza.division_increment + 0.5) * balanza.division_increment;   // peso calibrado
       
       if(g_bDiags) printf("%10ld, %10ld, %10ld, %10d\r", DELTA, CREDIT, SCALAR, iCSB);
        
@@ -467,7 +473,7 @@ void CONVERT_WEIGHT()   // read Weight data
    }
 }
 
-void FILL()   //   ciclo de llenado
+void fill()   //   ciclo de llenado
 {
    if(bStart){
       lock_timer = get_ticks();
@@ -475,7 +481,6 @@ void FILL()   //   ciclo de llenado
       switch (staEstado){
          case vacio:
             if(g_fPeso < g_fPreliminar) {//         }&& (fill_timer - fill_delay) > g_iFillDly){
-               output_high(O0);
                VIB_GRUESO_ON;
                lock_delay = get_ticks();
                FAST_ON;   // this is the physical output
@@ -519,23 +524,8 @@ void FILL()   //   ciclo de llenado
             break;
                       
          case lleno:
-            if(!bMotion){
-               float diff = (g_fTarget - g_fTol);
-               
+            if(!bMotion){               
                if(g_fPeso > g_fTarget){
-               
-                  // take the running average for frre fall time over 10 samples
-                  g_fFree_Fall = g_fPeso - g_fTarget;
-                  g_fFree_Fall = g_fLast_Free_Fall + 0.1 * (g_fFree_Fall - g_fLast_Free_Fall);
-                  g_fLast_Free_Fall = g_fFree_Fall;
-                  
-                  if(g_FFree_Fall > 40){
-                     g_fFree_fall = 40;
-                  }
-               }
-               
-               if(g_fPeso >= diff) {
-
                   lDropCounter++;   // contador de descargas
                   g_fAcumulado += g_fPeso;
                   g_fLastWeight = g_fPeso;
@@ -546,20 +536,15 @@ void FILL()   //   ciclo de llenado
                   staEstado = vaciar;
                }
                
-               else if (g_fPeso < diff){
-                  check_counter++;
-                  staEstado = vacio;
-               }
             }
-            
             break;
-         
+            
          default:
       }
    }
 }
 
-void DUMP ()   //   ciclo de descarga
+void dump ()   //   ciclo de descarga
 {
    if(bStart){
       dump_timer = get_ticks();
@@ -573,7 +558,6 @@ void DUMP ()   //   ciclo de descarga
             staEstado = vaciando;
             bDumping = 0;
             bRdy2Dump = 0;
-         
             break;
 
          case vaciando:
@@ -586,7 +570,6 @@ void DUMP ()   //   ciclo de descarga
          case esperandoVaciar:
             
             if((dump_timer - dump_delay) > g_lDumpDly){
-               output_low(O0);
                DUMP_OFF;
                DONE_OFF; // indica finalizada la descarga
                descarga = 0;
@@ -598,9 +581,7 @@ void DUMP ()   //   ciclo de descarga
             break;
             
          case esperandoLlenar:
-            output_high(O1);
             if((fill_timer - fill_delay) > g_lFillDly){
-               output_low(O1);
                staEstado = vacio;
                bEmpacadoraLista = 0;
             }
@@ -610,7 +591,7 @@ void DUMP ()   //   ciclo de descarga
    }
 }
 
-void HOST_COMMANDS(void)
+void host_commands(void)
 {
    char commands[4][10];
    char tok[] = ",";
@@ -620,18 +601,18 @@ void HOST_COMMANDS(void)
       
       if(usr_input[0] == ID) {   //Si no se ha recibido ningun comando retorna
    
-      // cout << usr_input[0] << endl;      
-      strcpy(n_usr_input, &usr_input + 1);
-      // cout << n_usr_input << endl;
-      
-      char *ptr;   // split commands
-      ptr = strtok(n_usr_input, tok);
-      
-      int i=0;   
-      while(ptr!=0){
-         strcpy(commands[i],ptr);
-         i++;
-         ptr = strtok(0, tok);
+	      // cout << usr_input[0] << endl;      
+	      strcpy(n_usr_input, &usr_input + 1);
+	      // cout << n_usr_input << endl;
+	      
+	      char *ptr;   // split commands
+	      ptr = strtok(n_usr_input, tok);
+	      
+	      int i=0;   
+	      while(ptr!=0){
+	         strcpy(commands[i],ptr);
+	         i++;
+	         ptr = strtok(0, tok);
       }
          
       switch (commands[0]){
@@ -645,10 +626,14 @@ void HOST_COMMANDS(void)
             ZERO_SET_COUNTER = atoi(commands[1]);
             printf("ZEROING, WAIT... \r");
             break;
-         
+            
+		case "TZ":
+			g_lLC_P0 = g_lCount;
+         	break;
+         	
          case "R":
             if(!bStart)
-               START_PROCESS();
+               start_process();
             break;
          
          case "P":   // stop
@@ -717,7 +702,6 @@ void HOST_COMMANDS(void)
                IF (bSlow_Fill) {
                   bSlow_Fill = 0;
                   SLOW_OFF;
-                  
                }
                else {
                   bSlow_Fill = 1;
@@ -741,7 +725,6 @@ void HOST_COMMANDS(void)
    
          case "Q":   // request data
             int8 temp = atoi(commands[2]);
-            // output_toggle(O0);
             if(bDumping && IN2){
                if( temp & 0x40){
                   descarga = TRUE;
@@ -749,27 +732,27 @@ void HOST_COMMANDS(void)
                }
             }
   
-            UPDATE_HOST(atoi(commands[1]));
+            update_host(atoi(commands[1]));
             break;
    
          case "PM":   // minimum weight
-            PESO_MINIMO(commands[1]);
+            peso_minimo(commands[1]);
             break;
             
          case "ZD":   // zero divisions
-            ZERO_DIVISIONS(commands[1]);
+            zero_divisions(commands[1]);
             break;
 
          case "ZT":   // zero tracking delay
-            ZERO_TRACKING(commands[1]);
+            zero_tracking(commands[1]);
             break;
    
          case "MD":   // motion divisions
-            MOTION_DIVISIONS(commands[1]);
+            motion_divisions(commands[1]);
             break;
         
          case "MT":   // motion delay
-            MOTION_TRACKING(commands[1]);
+            motion_tracking(commands[1]);
             break;
    
          case "A":   // smart filter input as: param, value
@@ -819,14 +802,12 @@ void HOST_COMMANDS(void)
    }
 }
 
-void UPDATE_HOST(int Tx = 99)
+void update_host(int Tx = 99)
 {
    
    switch (Tx){
       case 0:   //default transmission
-         //output_high(o0);
          printf("%c,0,%lu,%8.0f,%8.0f,%10.0f,%x,%x,%x\r", ID, lDropCounter, g_fPeso, g_fLastWeight, g_fFree_Fall, g_cInputs, g_cOutputs, g_cStatus);
-         //output_low(o0);
          break;
 
       case 1:
@@ -838,11 +819,9 @@ void UPDATE_HOST(int Tx = 99)
          break;
          
       case 5:
-         //output_high(O1);
          printf("%c,5,%ld,%ld,%ld,%ld,%ld,%.3f,", ID, g_iAMT[1], g_iAMT[2], g_iAMT[3], g_iAMT[4], g_iAMT[5], g_fKf);
          printf("%ld,%e,%f,%f,%f,", g_lLC_P0, g_fP1, g_fTarget, g_fPesoMin, g_fTestWeight);
          printf("%u,%6.2f,%u,%6.2f,%lu,%lu, %lu\r", g_iZtDly, g_fZtDiv, g_iMtDly, g_fMotn, g_lFillDly, g_lDumpDly, g_lLockDly);
-         //output_low(O1);
          break;
       
       case 99:
@@ -854,7 +833,7 @@ void UPDATE_HOST(int Tx = 99)
    }
 }
 
-void UPDATE_IO(void)
+void update_io(void)
 {
    I0 = IN0;
    I1 = IN1;
@@ -865,30 +844,23 @@ void UPDATE_IO(void)
 //=================================
 //   MAIN
 //=================================
-
-// todo:   set point variable
-
-//      auto cero
-
+//	TODO:
+//  auto cero
+//	decimales y minima división
+//	auto descarga
    
-void MAIN()
+void main()
 {
-   INIT_HARDWARE();
+   init_hardware();
 
-   char Text[] = "DesiCo. Systems\r";
-   //fprintf(HMI, "%s", Text);
-   printf("%c", ID);
-   
    // initialize input variables
    index=0;
-   input_ready=false;
+   input_ready = false;
    
    // process variables
 
    staEstado = reposando;
    eMode = Normal;
-   g_fFree_Fall = 0;
-   check_counter = 0;
    
    switch (restart_cause()){
       case RESTART_MCLR:
@@ -899,13 +871,13 @@ void MAIN()
          while(true)
          {
             restart_wdt();   
-            READ_HX711(eMode);
-            CONVERT_WEIGHT();
-            FILL();
-            DUMP();
-            HOST_COMMANDS();
-            UPDATE_HOST();
-            UPDATE_IO();
+            read_hx711(eMode);
+            convert_to_weight();
+            fill();
+            dump();
+            host_commands();
+            update_host();
+            update_io();
             BEAT;   // keep alive
          }
          break;
@@ -931,6 +903,7 @@ void MAIN()
          break;
       }
    }
-    while (true)
+    while (true){
       BEAT;   // error trap
+  	}
 }   
