@@ -12,7 +12,7 @@ Controlador para balanza con HX711
    
    IN2 empacadora lista para recibir
    
-   DONE se usa para indicar descarga de producto realizaada  
+   DONE se usa para indicar descarga de producto realizada  
    
 */
 
@@ -30,47 +30,71 @@ Controlador para balanza con HX711
 
 #ZERO_RAM
 
+#define MaxTimeOut 4  // 
+#define tIni 0x8FFF
+
 //============================================
 //  Weighing parameter define
 //============================================
 
-char ID = '1';    //device physical address
+char ID = '1';    	//device physical address
 
-int16 g_iAMT[5];  // smmart filter parameters must be stored and recalled from EEPROM
+int16 g_iAMT[5];  	// smart filter parameters must be stored and recalled from EEPROM
  
-signed int32 g_lP0;  // unloaded scale count value 
-float g_fP1, g_fKf;  // gain & filter
+int32 g_lP0;  		// unloaded scale count value 
+float g_fP1, g_fKf; // gain & filter
 int16 g_iZtDly, g_iMtDly, g_lFillDly, g_lDumpDly, g_lLockDly;   // zero tracking and motion delay in msec
-float g_fAcumulado, g_fPesoMin, g_fTarget, g_fPreliminar, g_fFree_Fall, g_fLast_Free_Fall, g_fTol, g_fZtDiv, g_fMotn, g_fTemp;
+float g_fAcumulado
+	, g_fPesoMin
+	, g_fTarget
+	, g_fPreliminar
+	, g_fFree_Fall
+	, g_fLast_Free_Fall
+	, g_fTol
+	, g_fZtDiv
+	, g_fMotn
+	, g_fTemp;
 
-long t;
+long t;	//RS-232 timeout
 
 //============================================
 //  global variable define
 //============================================
 
-int1  newCount,
-      TimeOut = False,
-      BoRx, EoRx, BadRx = False;  //controles de recepción de datos del PC
+boolean newCount,
+      	TimeOut = False,
+      	g_bDiags,
+      	is_lc_data_ready,
+      	input_ready,   // this will signal to the kernel that input is ready to be processed
+      	BoRx, EoRx, BadRx = False;  //controles de recepción de datos del PC
 
-signed int32 g_lPeso, g_lCnt_LC, g_lLC_P0, g_lCount, g_lCountTotal;
-float g_fPeso, g_fLastWeight, g_fTestWeight;
-int1 g_bDiags, LC_DATA_RDY;
 int16 ZERO_SET_COUNTER, GAIN_SET_COUNTER, lDropCounter, check_counter;
+int32 g_lPeso, g_lCnt_LC, g_lLC_P0, g_lCount, g_lCountTotal;
+float g_fPeso, g_fLastWeight, g_fTestWeight;
 
 char usr_input[30];      // this character array will be used to take input from the prompt
 int index;              // this will hold the current position in the array
 
-
-int1 input_ready;   // this will signal to the kernel that input is ready to be processed
-
 // enumerate different commands
-enum _Mode {Normal, SetZero, SetGain} eMode;
-enum _State {llenando, completando, comprobando, reposando, vaciando, esperandoLlenar, esperandoVaciar, vaciar, lleno, vacio} staEstado;
+enum _Mode
+	{ Normal
+	, SetZero
+	, SetGain
+	} eMode;
 
-#Define MaxTimeOut 4  // 
-#Define tIni 0x8FFF
-
+enum _State 
+	{ llenando
+	, completando
+	, comprobando
+	, reposando
+	, vaciando
+	, esperandoLlenar
+	, esperandoVaciar
+	, vaciar
+	, lleno
+	, vacio
+	} staEstado;
+	
 typedef union 
 {
    float f;
@@ -149,7 +173,6 @@ void USER_INPUT ( )      // serial port interrupt
    static int8 idx; //puntero índice;                     
    char c;
    c = getc();
-   // output_low(O0);     // solo para pruebas
 
    set_timer1(tIni);
    clear_interrupt(int_timer1);
@@ -203,22 +226,15 @@ void WS_DAT_isr(void)   // lectura de convertidor
       g_lCount|=0xFF800000;         
    output_low(WS_CLK);   // start new conversion
 
-   LC_DATA_RDY = true;
+   is_lc_data_ready = true;
 }
 
-#INT_EXT2   
-//!void in1_isr(void)   // detección de pulso de empacadora lista
-//!{ 
-//!   bEmpacadoraLista = 1;
-//!}
 
 #INT_TIMER1
 void timer1_isr(void)  // con este verificamos el fin de la trasnmision del mensaje de RS232
 {
   SET_TIMER1(tIni);
   t++;
-  
-  //OUTPUT_TOGGLE(O0);
   
   if(t>MaxTimeOut)
     {
@@ -228,7 +244,6 @@ void timer1_isr(void)  // con este verificamos el fin de la trasnmision del mens
     EoRx = BadRx?False:True; // si la trasnmision es buena señalamos con EoRx
     BadRx = False;
     TimeOut = True;
-    // Output_high(O0);  // solo para pruebas
     }  
 }
 
@@ -250,7 +265,7 @@ void INIT_HARDWARE(void)   //  initialize system hardware config
    enable_interrupts(INT_EXT1);
    ext_int_edge(1, H_TO_L);   
    enable_interrupts(INT_RDA);
-   enable_interrupts(int_timer1);
+   enable_interrupts(INT_TIMER1);
    enable_interrupts(INTR_GLOBAL);
 
    output_low(WS_CLK);   // HX711 normal operation
@@ -272,16 +287,16 @@ void INIT_HARDWARE(void)   //  initialize system hardware config
    read_eeprom(22, g_lLockDly);
    
    // scale params                             
-   g_lLC_P0 = read_int32_eeprom(44);   // ZERO
-   g_fP1 = read_float_eeprom(60);   // GAIN
+   g_lLC_P0 = read_int32_eeprom(44);   	// ZERO
+   g_fP1 = read_float_eeprom(60);   	// GAIN
    g_fTarget = read_float_eeprom(64);   //TARGET WEIGHT
-   g_fPesoMin = read_float_eeprom(68);   // MIN WEIGHT TO CONSIDER FOR ZERO
+   g_fPesoMin = read_float_eeprom(68);  // MIN WEIGHT TO CONSIDER FOR ZERO
    g_fTestWeight = read_float_eeprom(72);   // CAL TEST WEIGHT
-   g_fPreliminar = read_float_eeprom(76); // preliminar weight for fast feed
-   g_fKf = read_float_eeprom(80);   // moving average filter constants
-   g_fZtDiv = read_float_eeprom(84);   // zero tracking range
+   g_fPreliminar = read_float_eeprom(76);	// preliminar weight for fast feed
+   g_fKf = read_float_eeprom(80);   	// moving average filter constants
+   g_fZtDiv = read_float_eeprom(84);   	// zero tracking range
    g_fMotn   = read_float_eeprom(88);   // motion tracking
-   g_fTol = read_float_eeprom(92);   // motion tracking
+   g_fTol = read_float_eeprom(92);   	// motion tracking
 }
 
 //============================================
@@ -300,14 +315,13 @@ void UPDATE_HOST(int Tx=99);
 void UPDATE_IO();
 void PROCESS(void);
 void FILL();   // llenar
-void DUMP ();   // descargar
-void CALIB();   // calibrar
+void DUMP();   // descargar
 
 void READ_HX711(_Mode m)
 {
-   static signed int32 newCount2;
+   static int32 ad_count;	// analog-to-digital converter count
     
-   if(LC_DATA_RDY){   // si el convertidor tiene datos
+   if(is_lc_data_ready){   // si el convertidor tiene datos
       
       g_lCnt_LC = g_lCount - g_lLC_P0;
       g_lCountTotal = g_lCnt_LC;
@@ -315,25 +329,24 @@ void READ_HX711(_Mode m)
       switch (m)
       {
          case Normal:
-            LC_DATA_RDY = false;
+            is_lc_data_ready = false;
             newCount = true;                
             break;
          
          case SetZero:
             bCalibrating = 1;
             if((ZERO_SET_COUNTER--) >=0){
-               newCount2 = newCount2 + g_fKf*(g_lCount-NewCount2);
-               //printf("ZEROING... %d, %ld\n\r", ZERO_SET_COUNTER, newCount2);
+               ad_count = ad_count + g_fKf*(g_lCount-ad_count);
             }
             else{
-               g_lLC_P0 = NewCount2;
+               g_lLC_P0 = ad_count;
                write_int32_eeprom(44, g_lLC_P0);
                bCalibrating = 0;
                printf("%c,ZEROING DONE!\r",ID);
                eMode = Normal;
             }            
             
-            LC_DATA_RDY = false;         
+            is_lc_data_ready = false;         
             newCount = false;
             break;
          
@@ -398,8 +411,8 @@ void MOTION_DIVISIONS(par)
 
 void CONVERT_WEIGHT()   // read Weight data
 {
-   static signed int32 old_cnt, DELTA, CREDIT, SCALAR;
-   static signed int iCSB, iMotionCounter, iZeroCounter;
+   static int32 old_cnt, DELTA, CREDIT, SCALAR;
+   static int iCSB, iMotionCounter, iZeroCounter;
    static float fPesoAnterior;
    signed int tmp;
 
@@ -630,6 +643,7 @@ void HOST_COMMANDS(void)
          case "Z":
             eMode = SetZero;
             ZERO_SET_COUNTER = atoi(commands[1]);
+            printf("ZEROING, WAIT... \r");
             break;
          
          case "R":
