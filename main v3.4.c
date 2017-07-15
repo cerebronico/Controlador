@@ -46,23 +46,23 @@ struct scale_parms{
 	float calibration_weight;
 } scale;
 
-int16 g_iAMT[6]; 	// smart filter parameters must be stored and recalled from EEPROM
-
-int16	g_iZtDly,	// zero tracking and motion delay in msec
+int16 g_iAMT[6], 	// smart filter parameters must be stored and recalled from EEPROM
+		g_iZtDly,	// zero tracking and motion delay in msec
 		g_iMtDly,	//
 		g_lFillDly,	// fill delay
 		g_lDumpDly;	// dump delay
 
-int32 g_lP0;  		// unloaded scale count value
+//int32 g_lP0;  		// unloaded scale count value
 
-float g_fP1,		// gain &
+float g_fP0,
+		g_fP1,		// gain &
 		g_fKf,	 	//filter
 		g_fAcumulado,
 		g_fPesoMin,
 		g_fTarget,
 		g_fZtDiv,
-		g_fMotn,
-		g_fTemp;
+		g_fMotn;
+
 
 long t;	//RS-232 timeout
 
@@ -70,7 +70,7 @@ long t;	//RS-232 timeout
 //  global variable define
 //============================================
 
-boolean newCount,
+boolean is_newCount,
 		timeout_filling,
 		TimeOut = False,
 		g_bDiags,
@@ -80,7 +80,7 @@ boolean newCount,
 
 int16 ZERO_SET_COUNTER, GAIN_SET_COUNTER, lDropCounter;
 int32 g_lPeso, g_lCnt_LC, g_lLC_P0, g_lCount, g_lCountTotal;
-float g_fPeso, g_fLastWeight;
+float g_fPeso, multiplicador, g_fLastWeight;
 
 char usr_input[30];      // this character array will be used to take input from the prompt
 int index;              // this will hold the current position in the array
@@ -139,7 +139,7 @@ char g_cInputs, g_cOutputs, g_cStatus;
 #bit bDump = g_cOutputs.2
 #bit bFilling = g_cOutputs.3
 #bit bDumping = g_cOutputs.4
-#bit bPack = g_cOutputs.5
+#bit bVacio = g_cOutputs.5
 #bit bRdy2Dump = g_cOutputs.6
 #bit bfeeder = g_cOutputs.7
 
@@ -307,6 +307,8 @@ void init_hardware(void)	//  initialize system hardware config
    scale.decimal_positions = read_eeprom(30);
    scale.displayed_resolution = read_eeprom(32);
    scale.division_increment = read_eeprom(34);
+   
+   multiplicador = pow(10.0,(float)scale.decimal_positions);
 
    g_lLC_P0 = read_int32_eeprom(44);  	// ZERO
    g_fP1 = read_float_eeprom(60);   	// GAIN
@@ -343,7 +345,7 @@ void read_hx711(_Mode m)
       {
          case Normal:
             is_lc_data_ready = false;
-            newCount = true;
+            is_newCount = true;
             break;
 
          case SetZero:
@@ -355,12 +357,12 @@ void read_hx711(_Mode m)
                g_lLC_P0 = ad_count;
                write_int32_eeprom(44, g_lLC_P0);
                bCalibrating = 0;
-               printf("%c,ZEROING DONE!\r",ID);
+               printf("ZEROING DONE!, P0 = %ld\r", g_lLC_P0);
                eMode = Normal;
             }
 
             is_lc_data_ready = false;
-            newCount = false;
+            is_newCount = false;
             break;
 
          case SetGain:
@@ -368,9 +370,9 @@ void read_hx711(_Mode m)
 
                g_lPeso = g_lCnt_LC;
 
-               g_fP1 = scale.calibration_weight / g_lPeso;
+               g_fP1 = scale.calibration_weight * multiplicador / g_lPeso;
                write_float_eeprom(60, g_fP1);
-               printf("P1=%e, lc= %ld\n\r",g_fP1, g_lCnt_LC);
+               printf("P1=%e, lc= %ld, mul= %f\n\r",g_fP1, g_lCnt_LC, multiplicador);
                printf("%c,GAIN DONE!\r",ID);
                eMode = Normal;
             }
@@ -383,7 +385,8 @@ void read_hx711(_Mode m)
 
 void start_process()
 {
-   bStart = TRUE;
+   bStart = true;
+   bVacio = true;
    eEstado = vacio;
 }
 
@@ -391,7 +394,7 @@ void peso_minimo(char *par)
 {
    g_fPesoMin = atof(par);
    write_float_eeprom(68, g_fPesoMin);
-   printf("PM, %f\r", g_fPesoMin);
+   printf("PM, %8f\r", g_fPesoMin);
 }
 
 void zero_tracking(char *par)
@@ -405,7 +408,7 @@ void zero_divisions(char *par)
 {
    g_fZtDiv = atof(par);
    write_float_eeprom(84, g_fZtDiv);
-   printf("ZD, %f\r", g_fZtDiv);
+   printf("ZD, %12f\r", g_fZtDiv);
 }
 
 void motion_tracking(char *par)
@@ -419,7 +422,7 @@ void motion_divisions(char *par)
 {
    g_fMotn = atof(par);
    write_float_eeprom(88, g_fMotn);
-   printf("MD, %f\r", g_fMotn);
+   printf("MD, %12f\r", g_fMotn);
 }
 
 void convert_to_weight()   // read Weight data
@@ -429,7 +432,7 @@ void convert_to_weight()   // read Weight data
    static float fPesoAnterior;
    signed int tmp;
 
-   if(newCount){
+   if(is_newCount){
 
       DELTA = g_lCountTotal - old_cnt;
 
@@ -447,24 +450,26 @@ void convert_to_weight()   // read Weight data
       SCALAR = (tmp>0)?tmp:0;
       old_cnt = old_cnt + (DELTA/(pow(SCALAR,2) + g_iAMT[5]));
 
-      g_lPeso = old_cnt - g_lP0 ;   // ajuste del CERO;
-      g_fPeso = floor(g_fP1 * g_lPeso / scale.division_increment + 0.5) * scale.division_increment;   // peso calibrado
+      g_lPeso = old_cnt;	// - g_lP0 ;   // ajuste del CERO;
+      
+      // PESO CALIBRADO
+      g_fPeso = (g_fP1 * g_lPeso);
+      g_fPeso = (floor((0.5 + g_fPeso)/scale.division_increment))*scale.division_increment;
+      g_fPeso /= multiplicador;
+      g_fPeso -= g_fP0;
 
       if(g_bDiags) printf("%10ld, %10ld, %10ld, %10d\r", DELTA, CREDIT, SCALAR, iCSB);
 
-      g_fTemp = abs(g_fPeso-fPesoAnterior); // < g_fMotion;
-
       // MOTION
-      if(g_fTemp < g_fMotn){
-         //cout<<"menor \n\r"<<endl;
+      if(g_fMotn > abs(g_fPeso-fPesoAnterior)){
          if((iMotionCounter++ > g_iMtDly) && bMotion)
             bMotion = 0;
       }
       else{
-         //printf("mayor %10f\n\r", g_fMotion);
          iMotionCounter = 0;
          bMotion = 1;
       }
+      
       // ZERO TRACKING
       if(abs(g_fPeso) < g_fZtDiv){
          if((iZeroCounter++ > g_iZtDly) && !bZero)
@@ -474,8 +479,9 @@ void convert_to_weight()   // read Weight data
          iZeroCounter = 0;
          bZero = 0;
       }
+      
       fPesoAnterior = g_fPeso;
-      newCount = false;
+      is_newCount = false;
    }
 }
 
@@ -488,6 +494,9 @@ void fill()   //   ciclo de llenado
       switch (eEstado){
          case vacio:
             if(g_fPeso < g_fTarget) {
+            	if(abs(g_fPeso) < g_fPesoMin){
+            		g_fP0 = g_fPeso;
+            	}
             	fill_initiated = get_ticks();
                FAST_ON;   // this is the physical output
                SLOW_ON;
@@ -496,7 +505,7 @@ void fill()   //   ciclo de llenado
                bFilling = 1;
                bDumping = 0;
                bRdy2Dump = 0;
-               bPack = 0;
+               bVacio = 0;
                eEstado = llenando;
             }
             else{
@@ -508,8 +517,15 @@ void fill()   //   ciclo de llenado
             break;
 
          case llenando:
-            timeout_filling = (fill_timeout_timer - fill_initiated) > g_lFill_TOut;	
-				if ((g_fPeso >= g_fTarget) || (timeout_filling && (g_fPeso > g_fPesoMin))){
+         	if(g_fPeso > g_fPesoMin){
+	            timeout_filling = (fill_timeout_timer - fill_initiated) > g_lFill_TOut;	
+         	}
+         	else{
+         		fill_initiated = get_ticks();
+         		timeout_filling = false;
+         	}
+
+				if ((g_fPeso >= g_fTarget) || timeout_filling){
                   FAST_OFF;
                   SLOW_OFF;
                   bFast_Fill = 0;   // this is a flag only
@@ -556,6 +572,7 @@ void fill()   //   ciclo de llenado
                descarga = 0;
                bDump = 0;
                eEstado = esperandoLlenar;
+               g_fP0 = 0;
                fill_delay = get_ticks();
             }
             break;			      
@@ -631,8 +648,9 @@ void host_commands(void)
          	
          case "DEC":
          	scale.decimal_positions = atoi(commands[1]);
+         	multiplicador = pow(10.0, (float)scale.decimal_positions);
          	write_eeprom(30, scale.decimal_positions);
-            printf("DEC,%u\n\r", scale.decimal_positions);
+            printf("DEC,%f\n\r", multiplicador);
          	break;
          	
          case "R":
@@ -649,7 +667,7 @@ void host_commands(void)
             bFast_Fill = 0;
             bSlow_Fill = 0;
             bStart = FALSE;
-            bDump = bDumping = bFilling = bRdy2Dump = descarga = bPack = 0;
+            bDump = bDumping = bFilling = bRdy2Dump = descarga = bVacio = 0;
             break;
 
          case "PO":   // peso objetivo
@@ -790,11 +808,11 @@ void update_host(int Tx = 99)
 
    switch (Tx){
       case 0:   //default transmission
-         printf("%c,0,%lu,%8.0f,%8.0f,%x,%x,%x\r", ID, lDropCounter, g_fPeso, g_fLastWeight, g_cInputs, g_cOutputs, g_cStatus);
+         printf("%9f,0,%lu,%12f,%12f,%x,%x,%x\r", g_fP0, lDropCounter, g_fPeso, g_fLastWeight, g_cInputs, g_cOutputs, g_cStatus);
          break;
 
       case 1:
-         printf("%c,1,%ld,%12ld,%12.0f,%12.0f,", ID, g_lCountTotal, g_lPeso, g_fPeso, g_fTarget);
+         printf("%c,1,%ld,%12ld,%12f,%12f,", ID, g_lCountTotal, g_lPeso, g_fPeso, g_fTarget);
          printf("%u,%u,%u\r", scale.displayed_resolution, scale.division_increment, scale.decimal_positions);
          break;
 
@@ -804,8 +822,8 @@ void update_host(int Tx = 99)
 
       case 5:
          printf("%c,5,%ld,%ld,%ld,%ld,%ld,%.3f,", ID, g_iAMT[1], g_iAMT[2], g_iAMT[3], g_iAMT[4], g_iAMT[5], g_fKf);
-         printf("%ld,%e,%f,%f,%f,", g_lLC_P0, g_fP1, g_fTarget, g_fPesoMin, scale.calibration_weight);
-         printf("%u,%6.2f,%u,%6.2f,%lu,%lu,%lu\r", g_iZtDly, g_fZtDiv, g_iMtDly, g_fMotn, g_lFillDly, g_lDumpDly, g_lFill_TOut);
+         printf("%ld,%e,%12f,%12f,%12f,", g_lLC_P0, g_fP1, g_fTarget, g_fPesoMin, scale.calibration_weight);
+         printf("%u,%6.3f,%u,%6.3f,%lu,%lu,%lu\r", g_iZtDly, g_fZtDiv, g_iMtDly, g_fMotn, g_lFillDly, g_lDumpDly, g_lFill_TOut);
          break;
 
       case 99:
@@ -846,6 +864,7 @@ void main()
 
    eEstado = reposando;
    eMode = Normal;
+   g_fP0 = 0;
 
    switch (restart_cause()){
       case RESTART_MCLR:
