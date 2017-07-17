@@ -625,7 +625,7 @@ void host_commands(void)
             break;
 
 			case "TZ":	// temporal zero
-				g_lLC_P0 = g_lCount;
+				g_fP0 = g_fPeso;
          	break;
 
 			case "TW":   // test weight
@@ -840,6 +840,10 @@ void update_io(void)
    I0 = IN0;
    I1 = IN1;
    I2 = IN2;
+   
+   if(I0){
+   	g_fP0 = g_fPeso;
+   }
 }
 
 //=================================
@@ -871,6 +875,7 @@ void main()
         //cout<<"Restarted processor because of master clear!\r"<<endl;
 
       case RESTART_POWER_UP:
+      case RESTART_WATCHDOG:
       {
          while(true)
          {
@@ -885,11 +890,7 @@ void main()
          }
          break;
       }
-      case RESTART_WATCHDOG:
-      {
-         //cout<<"Restarted processor because of watchdog timeout!"<<endl;
-         break;
-      }
+      
       case RESTART_BROWNOUT:
       {
          //cout<<"Restarted processor because of brownout!"<<endl;
